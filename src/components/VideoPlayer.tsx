@@ -1,10 +1,14 @@
-import { Film } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { AlertCircle, Film } from 'lucide-react';
 
 interface VideoPlayerProps {
   url: string;
   poster?: string;
   title?: string;
   className?: string;
+  fit?: 'cover' | 'contain';
+  onReady?: (durationSeconds?: number) => void;
+  onError?: () => void;
 }
 
 function getYoutubeEmbedUrl(rawUrl: string): string | null {
@@ -28,7 +32,21 @@ function getYoutubeEmbedUrl(rawUrl: string): string | null {
   return null;
 }
 
-export function VideoPlayer({ url, poster, title, className = '' }: VideoPlayerProps) {
+export function VideoPlayer({
+  url,
+  poster,
+  title,
+  className = '',
+  fit = 'cover',
+  onReady,
+  onError
+}: VideoPlayerProps) {
+  const [hasError, setHasError] = useState(false);
+
+  useEffect(() => {
+    setHasError(false);
+  }, [url]);
+
   if (!url) {
     return (
       <div className={`flex flex-col items-center justify-center bg-zinc-900 text-zinc-400 ${className}`}>
@@ -47,7 +65,18 @@ export function VideoPlayer({ url, poster, title, className = '' }: VideoPlayerP
         className={`w-full h-full border-0 ${className}`}
         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
         allowFullScreen
+        onLoad={() => onReady?.()}
       />
+    );
+  }
+
+  if (hasError) {
+    return (
+      <div className={`flex flex-col items-center justify-center bg-zinc-900 text-zinc-300 px-4 text-center ${className}`}>
+        <AlertCircle className="w-7 h-7 mb-2 text-amber-400" />
+        <span className="text-xs font-medium">此影片無法於目前瀏覽器播放或路徑無效</span>
+        <span className="text-[11px] text-zinc-400 mt-1 break-all max-w-sm">{url}</span>
+      </div>
     );
   }
 
@@ -59,9 +88,15 @@ export function VideoPlayer({ url, poster, title, className = '' }: VideoPlayerP
       controls
       playsInline
       preload="metadata"
-      className={`w-full h-full object-cover bg-zinc-950 ${className}`}
+      onLoadedMetadata={(e) => onReady?.(e.currentTarget.duration)}
+      onError={() => {
+        setHasError(true);
+        onError?.();
+      }}
+      className={`w-full h-full ${fit === 'contain' ? 'object-contain' : 'object-cover'} bg-zinc-950 ${className}`}
     >
       您的瀏覽器不支援 HTML5 影片播放。
     </video>
   );
 }
+

@@ -1,11 +1,14 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
+  AlertCircle,
   Check,
+  CheckCircle2,
   Edit3,
   Eye,
   Film,
   ImagePlus,
   Link2,
+  Maximize2,
   Package,
   Plus,
   Search,
@@ -105,12 +108,51 @@ export function AdminDashboard({
   const [videoUrlInput, setVideoUrlInput] = useState('');
   const [uploadingImage, setUploadingImage] = useState(false);
   const [videoUploadProgress, setVideoUploadProgress] = useState<number | null>(null);
+  const [localVideoPreviewUrl, setLocalVideoPreviewUrl] = useState<string>('');
+  const [imageMeta, setImageMeta] = useState<
+    Record<string, { status: 'loading' | 'verified' | 'error'; name?: string; size?: number }>
+  >({});
+  const [videoMeta, setVideoMeta] = useState<{
+    status: 'idle' | 'uploading' | 'loading' | 'verified' | 'error';
+    name?: string;
+    size?: number;
+    duration?: number;
+  }>({ status: 'idle' });
+  const [dragImageOver, setDragImageOver] = useState(false);
+  const [dragVideoOver, setDragVideoOver] = useState(false);
+  const [previewGalleryIndex, setPreviewGalleryIndex] = useState<'video' | number>(0);
+  const [lightboxMedia, setLightboxMedia] = useState<
+    | { kind: 'image'; url: string; title: string }
+    | { kind: 'video'; url: string; poster?: string; title: string }
+    | { kind: 'product'; product: Product }
+    | null
+  >(null);
+
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const imageInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    return () => {
+      if (localVideoPreviewUrl) URL.revokeObjectURL(localVideoPreviewUrl);
+    };
+  }, [localVideoPreviewUrl]);
+
+  const formatBytes = (bytes?: number) => {
+    if (!bytes) return '';
+    if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const formatDuration = (seconds?: number) => {
+    if (!seconds || !Number.isFinite(seconds)) return '';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.round(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
 
   const showToast = (type: 'success' | 'error', text: string) => {
     setFeedback({ type, text });
@@ -121,6 +163,9 @@ export function AdminDashboard({
     setForm(EMPTY_FORM);
     setImageUrlInput('');
     setVideoUrlInput('');
+    setImageMeta({});
+    setVideoMeta({ status: 'idle' });
+    setPreviewGalleryIndex(0);
     setActiveTab('editor');
   };
 
@@ -128,15 +173,27 @@ export function AdminDashboard({
     setForm(productToForm(product));
     setImageUrlInput('');
     setVideoUrlInput(product.videoUrl);
+    const nextImgMeta: Record<string, { status: 'loading' | 'verified' | 'error' }> = {};
+    product.images.forEach((url) => {
+      nextImgMeta[url] = { status: 'loading' };
+    });
+    setImageMeta(nextImgMeta);
+    setVideoMeta(product.videoUrl ? { status: 'loading' } : { status: 'idle' });
+    setPreviewGalleryIndex(product.images.length > 0 ? 0 : product.videoUrl ? 'video' : 0);
     setActiveTab('editor');
   };
 
-  // Upload images via fetch FormData
+  // Upload images via fetch FormData and verify immediate preview load
   const handleImageFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     setUploadingImage(true);
     try {
       const uploadedUrls: string[] = [];
+      const nextMeta: Record<
+        string,
+        { status: 'loading' | 'verified' | 'error'; name?: string; size?: number }
+      > = {};
+
       for (const file of Array.from(files)) {
         const fd = new FormData();
         fd.append('file', file);
@@ -144,9 +201,17 @@ export function AdminDashboard({
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || '圖片上傳失敗');
         uploadedUrls.push(data.url);
+        nextMeta[data.url] = {
+          status: 'loading',
+          name: data.originalName || file.name,
+          size: data.size || file.size
+        };
       }
+
+      setImageMeta((prev) => ({ ...prev, ...nextMeta }));
       setForm((prev) => ({ ...prev, images: [...prev.images, ...uploadedUrls] }));
-      showToast('success', `成功上傳 ${uploadedUrls.length} 張商品圖片`);
+      setPreviewGalleryIndex(form.images.length);
+      showToast('success', `已上傳 ${uploadedUrls.length} 張商品圖片，可於下方與右側即時預覽`);
     } catch (err) {
       showToast('error', err instanceof Error ? err.message : '圖片上傳失敗');
     } finally {
@@ -155,12 +220,20 @@ export function AdminDashboard({
     }
   };
 
-  // Upload video with real XHR progress bar
+  // Upload video with real XHR progress bar + immediate local & server preview
   const handleVideoFile = (files: FileList | null) => {
     const file = files?.[0];
     if (!file) return;
 
+    if (localVideoPreviewUrl) {
+      URL.revokeObjectURL(localVideoPreviewUrl);
+    }
+    const blobUrl = URL.createObjectURL(file);
+    setLocalVideoPreviewUrl(blobUrl);
     setVideoUploadProgress(0);
+    setVideoMeta({ status: 'uploading', name: file.name, size: file.size });
+    setPreviewGalleryIndex('video');
+
     const fd = new FormData();
     fd.append('file', file);
 
@@ -178,18 +251,29 @@ export function AdminDashboard({
       try {
         const data = JSON.parse(xhr.responseText);
         if (xhr.status >= 200 && xhr.status < 300) {
+          URL.revokeObjectURL(blobUrl);
+          setLocalVideoPreviewUrl('');
           setForm((prev) => ({ ...prev, videoUrl: data.url }));
           setVideoUrlInput(data.url);
-          showToast('success', '商品影片上傳完成');
+          setVideoMeta({
+            status: 'loading',
+            name: data.originalName || file.name,
+            size: data.size || file.size
+          });
+          setPreviewGalleryIndex('video');
+          showToast('success', '商品影片已上傳至伺服器，請確認下方預覽播放');
         } else {
+          setVideoMeta({ status: 'error', name: file.name, size: file.size });
           showToast('error', data.error || '影片上傳失敗');
         }
       } catch {
+        setVideoMeta({ status: 'error', name: file.name, size: file.size });
         showToast('error', '影片上傳回應格式錯誤');
       }
     };
     xhr.onerror = () => {
       setVideoUploadProgress(null);
+      setVideoMeta({ status: 'error', name: file.name, size: file.size });
       showToast('error', '網路連線異常，影片上傳失敗');
     };
     xhr.send(fd);
@@ -198,12 +282,16 @@ export function AdminDashboard({
   const handleAddImageUrl = () => {
     const trimmed = imageUrlInput.trim();
     if (!trimmed) return;
+    setImageMeta((prev) => ({ ...prev, [trimmed]: { status: 'loading' } }));
     setForm((prev) => ({ ...prev, images: [...prev.images, trimmed] }));
     setImageUrlInput('');
   };
 
   const handleApplyVideoUrl = () => {
-    setForm((prev) => ({ ...prev, videoUrl: videoUrlInput.trim() }));
+    const trimmed = videoUrlInput.trim();
+    setForm((prev) => ({ ...prev, videoUrl: trimmed }));
+    setVideoMeta(trimmed ? { status: 'loading' } : { status: 'idle' });
+    if (trimmed) setPreviewGalleryIndex('video');
   };
 
   const setAsCoverImage = (idx: number) => {
@@ -522,6 +610,15 @@ export function AdminDashboard({
                       </button>
                       <button
                         type="button"
+                        onClick={() => setLightboxMedia({ kind: 'product', product })}
+                        aria-label="後台媒體預覽"
+                        className="min-h-[40px] px-2.5 rounded-lg border border-zinc-300 text-xs font-medium text-zinc-700 flex items-center gap-1"
+                      >
+                        <Film className="w-3.5 h-3.5" />
+                        <span>媒體</span>
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => onPreviewProduct(product)}
                         aria-label="前台檢視"
                         className="min-h-[40px] min-w-[40px] rounded-lg border border-zinc-300 flex items-center justify-center text-zinc-700"
@@ -606,6 +703,13 @@ export function AdminDashboard({
                         </td>
                         <td className="py-3.5 px-4">
                           <div className="flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setLightboxMedia({ kind: 'product', product })}
+                              className="px-2.5 py-1.5 rounded-lg border border-zinc-200 hover:border-zinc-400 text-xs font-medium text-zinc-700"
+                            >
+                              媒體預覽
+                            </button>
                             <button
                               type="button"
                               onClick={() => onPreviewProduct(product)}
@@ -763,17 +867,38 @@ export function AdminDashboard({
               </div>
             </section>
 
-            {/* Section 2: Product Images Upload (圖片上稿) */}
+            {/* Section 2: Product Images Upload (圖片上稿與即時驗證預覽) */}
             <section className="bg-white rounded-2xl border border-zinc-200 p-5 sm:p-6 space-y-4">
-              <div className="border-b border-zinc-100 pb-3">
-                <h2 className="text-base font-semibold text-zinc-900">2. 商品圖片上稿（支援多圖上傳）</h2>
-                <p className="text-xs text-zinc-500 mt-0.5">
-                  可從手機相簿或電腦直接上傳圖片，亦可貼上外部圖片網址；第一張圖片將作為前台列表封面。
-                </p>
+              <div className="border-b border-zinc-100 pb-3 flex items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-base font-semibold text-zinc-900">
+                    2. 商品圖片上稿（上傳後即時預覽）
+                  </h2>
+                  <p className="text-xs text-zinc-500 mt-0.5">
+                    支援拖曳或點擊多圖上傳，上傳後立即於下方顯示縮圖與伺服器讀取狀態確認。
+                  </p>
+                </div>
+                {form.images.length > 0 && (
+                  <span className="text-xs font-medium text-emerald-900 tabular-nums shrink-0">
+                    已載入 {form.images.length} 張
+                  </span>
+                )}
               </div>
 
-              {/* File Picker Upload Zone */}
-              <div className="flex flex-col sm:flex-row gap-3">
+              {/* File Picker + Drag & Drop Upload Zone */}
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragImageOver(true);
+                }}
+                onDragLeave={() => setDragImageOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragImageOver(false);
+                  handleImageFiles(e.dataTransfer.files);
+                }}
+                className="flex flex-col sm:flex-row gap-3"
+              >
                 <input
                   ref={imageInputRef}
                   type="file"
@@ -786,10 +911,18 @@ export function AdminDashboard({
                   type="button"
                   disabled={uploadingImage}
                   onClick={() => imageInputRef.current?.click()}
-                  className="min-h-[48px] px-5 py-3 rounded-xl border-2 border-dashed border-zinc-300 hover:border-emerald-900 bg-zinc-50 hover:bg-emerald-950/5 text-sm font-medium text-zinc-800 flex items-center justify-center gap-2 transition-colors flex-1"
+                  className={`min-h-[56px] px-5 py-3 rounded-xl border-2 border-dashed text-sm font-medium text-zinc-800 flex items-center justify-center gap-2 transition-colors flex-1 ${
+                    dragImageOver
+                      ? 'border-emerald-900 bg-emerald-950/10'
+                      : 'border-zinc-300 hover:border-emerald-900 bg-zinc-50 hover:bg-emerald-950/5'
+                  }`}
                 >
                   <ImagePlus className="w-4 h-4 text-emerald-900" />
-                  <span>{uploadingImage ? '圖片上傳處理中...' : '選擇或拍攝商品圖片（可多選）'}</span>
+                  <span>
+                    {uploadingImage
+                      ? '圖片上傳與驗證中...'
+                      : '點擊或拖曳商品圖片至此上傳（可多選）'}
+                  </span>
                 </button>
               </div>
 
@@ -814,56 +947,114 @@ export function AdminDashboard({
                 </button>
               </div>
 
-              {/* Uploaded Images Preview Grid */}
+              {/* Uploaded Images Preview Grid with live server-load verification */}
               {form.images.length > 0 && (
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2">
-                  {form.images.map((url, idx) => (
-                    <div
-                      key={`${url}-${idx}`}
-                      className="group relative rounded-xl overflow-hidden border border-zinc-200 bg-zinc-100"
-                    >
-                      <div className="aspect-[4/3]">
-                        <MediaImage
-                          src={url}
-                          alt={`商品圖 ${idx + 1}`}
-                          className="w-full h-full object-cover"
-                        />
-                      </div>
-                      <div className="p-2 bg-white border-t border-zinc-100 flex items-center justify-between gap-1">
-                        {idx === 0 ? (
-                          <span className="text-[11px] font-semibold text-emerald-900">
-                            封面主圖
-                          </span>
-                        ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-2">
+                  {form.images.map((url, idx) => {
+                    const meta = imageMeta[url];
+                    const status = meta?.status || 'loading';
+                    return (
+                      <div
+                        key={`${url}-${idx}`}
+                        className="group relative rounded-xl overflow-hidden border border-zinc-200 bg-zinc-50 flex flex-col"
+                      >
+                        <div className="relative aspect-[4/3] bg-zinc-100">
+                          <img
+                            src={url}
+                            alt={meta?.name || `商品預覽圖 ${idx + 1}`}
+                            referrerPolicy="no-referrer"
+                            onLoad={() =>
+                              setImageMeta((prev) => ({
+                                ...prev,
+                                [url]: { ...prev[url], status: 'verified' }
+                              }))
+                            }
+                            onError={() =>
+                              setImageMeta((prev) => ({
+                                ...prev,
+                                [url]: { ...prev[url], status: 'error' }
+                              }))
+                            }
+                            className="w-full h-full object-cover"
+                          />
                           <button
                             type="button"
-                            onClick={() => setAsCoverImage(idx)}
-                            className="text-[11px] text-zinc-600 hover:text-zinc-900 underline"
+                            onClick={() =>
+                              setLightboxMedia({
+                                kind: 'image',
+                                url,
+                                title: meta?.name || `${form.name || '商品'} - 圖片 ${idx + 1}`
+                              })
+                            }
+                            aria-label="放大預覽圖片"
+                            className="absolute bottom-2 right-2 min-h-[34px] px-2.5 rounded-lg bg-zinc-900/80 hover:bg-zinc-900 text-white text-[11px] font-medium flex items-center gap-1 backdrop-blur-xs"
                           >
-                            設為封面
+                            <Maximize2 className="w-3 h-3" />
+                            <span>放大</span>
                           </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => removeImage(idx)}
-                          aria-label="移除圖片"
-                          className="p-1 text-zinc-400 hover:text-red-600"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        </div>
+
+                        <div className="p-2.5 bg-white border-t border-zinc-100 space-y-1.5">
+                          <div className="flex items-center justify-between gap-1 text-[11px]">
+                            {status === 'verified' ? (
+                              <span className="inline-flex items-center gap-1 text-emerald-900 font-medium">
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                                上傳成功
+                              </span>
+                            ) : status === 'error' ? (
+                              <span className="inline-flex items-center gap-1 text-red-700 font-medium">
+                                <AlertCircle className="w-3.5 h-3.5" />
+                                無法讀取
+                              </span>
+                            ) : (
+                              <span className="text-zinc-500">預覽載入中...</span>
+                            )}
+                            {meta?.size && (
+                              <span className="text-zinc-400 tabular-nums">
+                                {formatBytes(meta.size)}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center justify-between gap-1 pt-1 border-t border-zinc-100">
+                            {idx === 0 ? (
+                              <span className="text-[11px] font-semibold text-zinc-900">
+                                封面主圖
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setAsCoverImage(idx)}
+                                className="text-[11px] text-zinc-600 hover:text-zinc-900 underline"
+                              >
+                                設為封面
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => removeImage(idx)}
+                              aria-label="移除圖片"
+                              className="p-1 text-zinc-400 hover:text-red-600"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </section>
 
-            {/* Section 3: Product Video Upload (影片上稿) */}
+            {/* Section 3: Product Video Upload (影片上稿與即時播放驗證) */}
             <section className="bg-white rounded-2xl border border-zinc-200 p-5 sm:p-6 space-y-4">
               <div className="border-b border-zinc-100 pb-3">
-                <h2 className="text-base font-semibold text-zinc-900">3. 商品影片上稿（MP4 / WebM / YouTube）</h2>
+                <h2 className="text-base font-semibold text-zinc-900">
+                  3. 商品影片上稿（上傳後即時播放確認）
+                </h2>
                 <p className="text-xs text-zinc-500 mt-0.5">
-                  上傳實拍商品介紹短片（最大支援 100MB），或貼上 YouTube / MP4 影片連結。
+                  上傳實拍商品介紹短片（MP4 / WebM / MOV，最大 100MB），完成後可直接於下方播放器試播檢查。
                 </p>
               </div>
 
@@ -875,26 +1066,48 @@ export function AdminDashboard({
                 className="hidden"
               />
 
-              <button
-                type="button"
-                disabled={videoUploadProgress !== null}
-                onClick={() => videoInputRef.current?.click()}
-                className="w-full min-h-[52px] px-5 py-3 rounded-xl border-2 border-dashed border-zinc-300 hover:border-emerald-900 bg-zinc-50 hover:bg-emerald-950/5 text-sm font-medium text-zinc-800 flex items-center justify-center gap-2 transition-colors"
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragVideoOver(true);
+                }}
+                onDragLeave={() => setDragVideoOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragVideoOver(false);
+                  handleVideoFile(e.dataTransfer.files);
+                }}
               >
-                <Upload className="w-4 h-4 text-emerald-900" />
-                <span>
-                  {videoUploadProgress !== null
-                    ? `影片上傳中 ${videoUploadProgress}%...`
-                    : '上傳商品介紹影片檔（MP4 / WebM / MOV）'}
-                </span>
-              </button>
+                <button
+                  type="button"
+                  disabled={videoUploadProgress !== null}
+                  onClick={() => videoInputRef.current?.click()}
+                  className={`w-full min-h-[56px] px-5 py-3 rounded-xl border-2 border-dashed text-sm font-medium text-zinc-800 flex items-center justify-center gap-2 transition-colors ${
+                    dragVideoOver
+                      ? 'border-emerald-900 bg-emerald-950/10'
+                      : 'border-zinc-300 hover:border-emerald-900 bg-zinc-50 hover:bg-emerald-950/5'
+                  }`}
+                >
+                  <Upload className="w-4 h-4 text-emerald-900" />
+                  <span>
+                    {videoUploadProgress !== null
+                      ? `影片上傳至伺服器中 ${videoUploadProgress}%...`
+                      : '點擊或拖曳影片檔至此上傳（MP4 / WebM / MOV）'}
+                  </span>
+                </button>
+              </div>
 
               {videoUploadProgress !== null && (
-                <div className="w-full h-2 rounded-full bg-zinc-200 overflow-hidden">
-                  <div
-                    className="h-full bg-emerald-900 transition-all duration-150"
-                    style={{ width: `${videoUploadProgress}%` }}
-                  />
+                <div className="space-y-1">
+                  <div className="w-full h-2 rounded-full bg-zinc-200 overflow-hidden">
+                    <div
+                      className="h-full bg-emerald-900 transition-all duration-150"
+                      style={{ width: `${videoUploadProgress}%` }}
+                    />
+                  </div>
+                  <p className="text-xs text-zinc-500 tabular-nums">
+                    正在上傳：{videoMeta.name}（{videoUploadProgress}%）
+                  </p>
                 </div>
               )}
 
@@ -918,29 +1131,100 @@ export function AdminDashboard({
                 </button>
               </div>
 
-              {form.videoUrl && (
-                <div className="space-y-2 pt-2">
-                  <div className="flex items-center justify-between text-xs text-zinc-600">
-                    <span className="inline-flex items-center gap-1.5 font-medium text-emerald-900">
-                      <Film className="w-3.5 h-3.5" />
-                      目前商品影片預覽
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setForm((prev) => ({ ...prev, videoUrl: '' }));
-                        setVideoUrlInput('');
-                      }}
-                      className="text-red-600 hover:underline font-medium"
-                    >
-                      移除影片
-                    </button>
+              {(localVideoPreviewUrl || form.videoUrl) && (
+                <div className="space-y-2.5 pt-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2">
+                      {videoMeta.status === 'verified' ? (
+                        <span className="inline-flex items-center gap-1.5 font-medium text-emerald-900">
+                          <CheckCircle2 className="w-4 h-4" />
+                          影片上傳成功 · 可正常播放
+                        </span>
+                      ) : videoMeta.status === 'uploading' ? (
+                        <span className="inline-flex items-center gap-1.5 font-medium text-zinc-700">
+                          <Film className="w-4 h-4" />
+                          本地即時預覽（上傳中）
+                        </span>
+                      ) : videoMeta.status === 'error' ? (
+                        <span className="inline-flex items-center gap-1.5 font-medium text-red-700">
+                          <AlertCircle className="w-4 h-4" />
+                          影片載入異常（請改用 H.264 MP4 或 WebM 格式）
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 font-medium text-zinc-700">
+                          <Film className="w-4 h-4" />
+                          讀取伺服器影片中...
+                        </span>
+                      )}
+
+                      {videoMeta.duration && (
+                        <>
+                          <span aria-hidden="true" className="text-zinc-300">·</span>
+                          <span className="text-zinc-500 tabular-nums">
+                            片長 {formatDuration(videoMeta.duration)}
+                          </span>
+                        </>
+                      )}
+                      {videoMeta.size && (
+                        <>
+                          <span aria-hidden="true" className="text-zinc-300">·</span>
+                          <span className="text-zinc-500 tabular-nums">
+                            {formatBytes(videoMeta.size)}
+                          </span>
+                        </>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setLightboxMedia({
+                            kind: 'video',
+                            url: localVideoPreviewUrl || form.videoUrl,
+                            poster: form.images[0],
+                            title: videoMeta.name || form.name || '商品影片預覽'
+                          })
+                        }
+                        className="text-zinc-700 hover:text-zinc-900 font-medium inline-flex items-center gap-1"
+                      >
+                        <Maximize2 className="w-3.5 h-3.5" />
+                        <span>放大播放</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (localVideoPreviewUrl) {
+                            URL.revokeObjectURL(localVideoPreviewUrl);
+                            setLocalVideoPreviewUrl('');
+                          }
+                          setForm((prev) => ({ ...prev, videoUrl: '' }));
+                          setVideoUrlInput('');
+                          setVideoMeta({ status: 'idle' });
+                        }}
+                        className="text-red-600 hover:underline font-medium"
+                      >
+                        移除影片
+                      </button>
+                    </div>
                   </div>
+
                   <div className="aspect-[16/9] rounded-xl overflow-hidden bg-zinc-950 border border-zinc-200">
                     <VideoPlayer
-                      url={form.videoUrl}
+                      url={localVideoPreviewUrl || form.videoUrl}
                       poster={form.images[0]}
                       title={form.name || '商品預覽影片'}
+                      fit="contain"
+                      onReady={(duration) =>
+                        setVideoMeta((prev) => ({
+                          ...prev,
+                          status: prev.status === 'uploading' ? 'uploading' : 'verified',
+                          duration
+                        }))
+                      }
+                      onError={() =>
+                        setVideoMeta((prev) => ({ ...prev, status: 'error' }))
+                      }
                     />
                   </div>
                 </div>
@@ -1093,28 +1377,78 @@ export function AdminDashboard({
             </div>
           </div>
 
-          {/* Right Live Mobile Preview Column */}
-          <aside className="lg:col-span-4 lg:sticky lg:top-24 space-y-3">
+          {/* Right Live Interactive Media & Card Preview Column */}
+          <aside className="lg:col-span-4 lg:sticky lg:top-24 space-y-4">
             <div className="bg-white rounded-2xl border border-zinc-200 p-4 space-y-3">
               <div className="flex items-center justify-between text-xs text-zinc-500">
-                <span className="font-semibold text-zinc-900">前台卡片即時預覽</span>
-                <span>行動版顯示比例</span>
+                <span className="font-semibold text-zinc-900">後台即時圖影預覽</span>
+                <span>
+                  {form.images.length} 圖 · {localVideoPreviewUrl || form.videoUrl ? '含影片' : '無影片'}
+                </span>
               </div>
 
+              {/* Interactive Stage */}
               <div className="rounded-xl border border-zinc-200 overflow-hidden bg-white">
                 <div className="aspect-[4/3] bg-zinc-100">
-                  <MediaImage
-                    src={form.images[0]}
-                    alt={form.name || '商品名稱預覽'}
-                    className="w-full h-full object-cover"
-                  />
+                  {previewGalleryIndex === 'video' && (localVideoPreviewUrl || form.videoUrl) ? (
+                    <VideoPlayer
+                      url={localVideoPreviewUrl || form.videoUrl}
+                      poster={form.images[0]}
+                      title={form.name || '商品影片即時預覽'}
+                      fit="contain"
+                    />
+                  ) : (
+                    <MediaImage
+                      src={
+                        form.images[typeof previewGalleryIndex === 'number' ? previewGalleryIndex : 0] ||
+                        form.images[0]
+                      }
+                      alt={form.name || '商品名稱預覽'}
+                      className="w-full h-full object-cover"
+                    />
+                  )}
                 </div>
-                <div className="p-3.5 space-y-1.5">
+
+                {/* Switcher thumbnails inside preview */}
+                {(form.images.length > 0 || localVideoPreviewUrl || form.videoUrl) && (
+                  <div className="p-2.5 border-t border-zinc-100 bg-zinc-50 flex items-center gap-2 overflow-x-auto no-scrollbar">
+                    {form.images.map((url, idx) => (
+                      <button
+                        key={`${url}-preview-${idx}`}
+                        type="button"
+                        onClick={() => setPreviewGalleryIndex(idx)}
+                        className={`w-12 h-10 rounded-lg overflow-hidden border-2 shrink-0 ${
+                          previewGalleryIndex === idx
+                            ? 'border-emerald-950'
+                            : 'border-zinc-200 opacity-70 hover:opacity-100'
+                        }`}
+                      >
+                        <MediaImage src={url} alt={`縮圖 ${idx + 1}`} className="w-full h-full object-cover" />
+                      </button>
+                    ))}
+                    {(localVideoPreviewUrl || form.videoUrl) && (
+                      <button
+                        type="button"
+                        onClick={() => setPreviewGalleryIndex('video')}
+                        className={`h-10 px-2.5 rounded-lg border-2 shrink-0 bg-zinc-900 text-white text-[11px] font-medium flex items-center gap-1 ${
+                          previewGalleryIndex === 'video'
+                            ? 'border-emerald-800'
+                            : 'border-zinc-700 opacity-80 hover:opacity-100'
+                        }`}
+                      >
+                        <Film className="w-3.5 h-3.5" />
+                        <span>影片</span>
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                <div className="p-3.5 space-y-1.5 border-t border-zinc-100">
                   <div className="flex items-center gap-2 text-xs text-zinc-500">
                     <span>{form.category}</span>
                     <span aria-hidden="true">·</span>
                     <span>{Number(form.stock) > 0 ? '現貨供應' : '補貨中'}</span>
-                    {form.videoUrl && (
+                    {(localVideoPreviewUrl || form.videoUrl) && (
                       <>
                         <span aria-hidden="true">·</span>
                         <span className="text-emerald-900 font-medium">商品影片</span>
@@ -1207,6 +1541,92 @@ export function AdminDashboard({
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Admin Media Lightbox / Verification Modal */}
+      {lightboxMedia && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs">
+          <div className="relative w-full max-w-3xl bg-white rounded-2xl overflow-hidden shadow-2xl border border-zinc-200">
+            <div className="px-5 py-3.5 border-b border-zinc-200 flex items-center justify-between gap-3">
+              <h3 className="text-sm font-semibold text-zinc-900 truncate">
+                {lightboxMedia.kind === 'product'
+                  ? `${lightboxMedia.product.name} — 已上傳媒體檢查`
+                  : lightboxMedia.title}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setLightboxMedia(null)}
+                aria-label="關閉預覽"
+                className="min-h-[40px] min-w-[40px] -mr-2 flex items-center justify-center text-zinc-500 hover:text-zinc-900 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 sm:p-5 bg-zinc-950 max-h-[75vh] overflow-y-auto">
+              {lightboxMedia.kind === 'image' && (
+                <img
+                  src={lightboxMedia.url}
+                  alt={lightboxMedia.title}
+                  referrerPolicy="no-referrer"
+                  className="max-h-[65vh] w-auto mx-auto rounded-lg object-contain"
+                />
+              )}
+
+              {lightboxMedia.kind === 'video' && (
+                <div className="aspect-[16/9] w-full rounded-lg overflow-hidden">
+                  <VideoPlayer
+                    url={lightboxMedia.url}
+                    poster={lightboxMedia.poster}
+                    title={lightboxMedia.title}
+                    fit="contain"
+                  />
+                </div>
+              )}
+
+              {lightboxMedia.kind === 'product' && (
+                <div className="space-y-4">
+                  {lightboxMedia.product.videoUrl && (
+                    <div className="space-y-1.5">
+                      <p className="text-xs font-medium text-zinc-300">商品介紹影片</p>
+                      <div className="aspect-[16/9] rounded-lg overflow-hidden">
+                        <VideoPlayer
+                          url={lightboxMedia.product.videoUrl}
+                          poster={lightboxMedia.product.images[0]}
+                          title={lightboxMedia.product.name}
+                          fit="contain"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {lightboxMedia.product.images.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium text-zinc-300">
+                        商品圖片（共 {lightboxMedia.product.images.length} 張）
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {lightboxMedia.product.images.map((img, i) => (
+                          <div key={i} className="rounded-lg overflow-hidden bg-zinc-900 aspect-[4/3]">
+                            <MediaImage
+                              src={img}
+                              alt={`${lightboxMedia.product.name} 圖片 ${i + 1}`}
+                              className="w-full h-full object-cover"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {!lightboxMedia.product.videoUrl && lightboxMedia.product.images.length === 0 && (
+                    <p className="text-sm text-zinc-400 text-center py-8">此商品尚未上傳任何圖片或影片</p>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -247,14 +247,18 @@ const storage = multer.diskStorage({
   }
 });
 
+const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg', '.avif', '.heic']);
+const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov', '.m4v', '.ogg', '.ogv']);
+
 const upload = multer({
   storage,
   limits: {
     fileSize: 100 * 1024 * 1024 // 100 MB max for video/image upload
   },
   fileFilter: (_req, file, cb) => {
-    const isImage = file.mimetype.startsWith('image/');
-    const isVideo = file.mimetype.startsWith('video/');
+    const ext = path.extname(file.originalname).toLowerCase();
+    const isImage = file.mimetype.startsWith('image/') || IMAGE_EXTS.has(ext);
+    const isVideo = file.mimetype.startsWith('video/') || VIDEO_EXTS.has(ext);
     if (isImage || isVideo) {
       cb(null, true);
     } else {
@@ -283,7 +287,8 @@ async function startServer() {
       res.status(400).json({ error: '未選擇任何檔案' });
       return;
     }
-    const kind = req.file.mimetype.startsWith('video/') ? 'video' : 'image';
+    const ext = path.extname(req.file.originalname).toLowerCase();
+    const kind = req.file.mimetype.startsWith('video/') || VIDEO_EXTS.has(ext) ? 'video' : 'image';
     res.json({
       url: `/uploads/${req.file.filename}`,
       type: kind,
