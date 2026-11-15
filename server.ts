@@ -2,9 +2,13 @@ import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import multer from 'multer';
 import type { Order, Product } from './src/types.ts';
 import { SEED_PRODUCTS } from './src/data/seedProducts.ts';
+
+const execFileAsync = promisify(execFile);
 
 const PORT = Number(process.env.PORT || 3000);
 const ROOT_DIR = process.cwd();
@@ -57,7 +61,90 @@ const storage = multer.diskStorage({
 });
 
 const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg', '.avif', '.heic']);
-const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov', '.m4v', '.ogg', '.ogv']);
+const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov', '.m4v', '.ogg', '.ogv', '.avi', '.mkv']);
+const CHUNKS_DIR = path.join(UPLOADS_DIR, '.chunks');
+
+async function normalizeUploadedVideo(inputPath: string, origExt: string): Promise<string> {
+  const parsed = path.parse(inputPath);
+  const ext = origExt.toLowerCase();
+
+  try {
+    const { stdout } = await execFileAsync('ffprobe', [
+      '-v',
+      'error',
+      '-select_streams',
+      'v:0',
+      '-show_entries',
+      'stream=codec_name,pix_fmt',
+      '-of',
+      'json',
+      inputPath
+    ]);
+    const info = JSON.parse(stdout) as {
+      streams?: Array<{ codec_name?: string; pix_fmt?: string }>;
+    };
+    const vStream = info.streams?.[0];
+    const codec = (vStream?.codec_name || '').toLowerCase();
+    const pixFmt = (vStream?.pix_fmt || '').toLowerCase();
+
+    const isBrowserMp4Ready =
+      (ext === '.mp4' || ext === '.m4v') && codec === 'h264' && (!pixFmt || pixFmt === 'yuv420p');
+    const isBrowserWebm = ext === '.webm' && (codec === 'vp8' || codec === 'vp9' || codec === 'av1');
+
+    if (isBrowserWebm) {
+      return path.basename(inputPath);
+    }
+
+    const outName = `${parsed.name}-ready.mp4`;
+    const outPath = path.join(parsed.dir, outName);
+
+    if (isBrowserMp4Ready) {
+      // Zero re-encode: just move moov atom to start so browser plays immediately
+      await execFileAsync('ffmpeg', [
+        '-y',
+        '-v',
+        'error',
+        '-i',
+        inputPath,
+        '-c',
+        'copy',
+        '-movflags',
+        '+faststart',
+        outPath
+      ]);
+    } else {
+      // Transcode non-H.264 / MOV / 10-bit videos to browser-compatible H.264 + AAC MP4
+      await execFileAsync('ffmpeg', [
+        '-y',
+        '-v',
+        'error',
+        '-i',
+        inputPath,
+        '-c:v',
+        'libx264',
+        '-preset',
+        'veryfast',
+        '-pix_fmt',
+        'yuv420p',
+        '-c:a',
+        'aac',
+        '-b:a',
+        '128k',
+        '-movflags',
+        '+faststart',
+        outPath
+      ]);
+    }
+
+    if (fs.existsSync(outPath) && fs.statSync(outPath).size > 0) {
+      fs.unlinkSync(inputPath);
+      return outName;
+    }
+  } catch {
+    // If ffmpeg/ffprobe fails or is unavailable, keep original uploaded file
+  }
+  return path.basename(inputPath);
+}
 
 const upload = multer({
   storage,
@@ -91,20 +178,117 @@ async function startServer() {
   });
 
   // Upload endpoint (supports images and videos via multipart/form-data)
-  app.post('/api/upload', upload.single('file'), (req, res) => {
+  app.post('/api/upload', upload.single('file'), async (req, res) => {
     if (!req.file) {
       res.status(400).json({ error: '未選擇任何檔案' });
       return;
     }
     const ext = path.extname(req.file.originalname).toLowerCase();
     const kind = req.file.mimetype.startsWith('video/') || VIDEO_EXTS.has(ext) ? 'video' : 'image';
+    let finalFilename = req.file.filename;
+    let finalSize = req.file.size;
+
+    if (kind === 'video') {
+      const fullPath = path.join(UPLOADS_DIR, req.file.filename);
+      finalFilename = await normalizeUploadedVideo(fullPath, ext);
+      try {
+        finalSize = fs.statSync(path.join(UPLOADS_DIR, finalFilename)).size;
+      } catch {
+        // keep original size
+      }
+    }
+
     res.json({
-      url: `/uploads/${req.file.filename}`,
+      url: `/uploads/${finalFilename}`,
       type: kind,
       originalName: req.file.originalname,
-      size: req.file.size
+      size: finalSize
     });
   });
+
+  // Chunked binary upload endpoint for large videos (stays under proxy body limits)
+  app.post(
+    '/api/upload-chunk',
+    express.raw({ type: 'application/octet-stream', limit: '8mb' }),
+    async (req, res) => {
+      try {
+        const uploadId = String(req.query.uploadId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+        const chunkIndex = Number(req.query.chunkIndex);
+        const totalChunks = Number(req.query.totalChunks);
+        const originalName = String(req.query.filename || 'video.mp4');
+
+        if (
+          !uploadId ||
+          !Number.isInteger(chunkIndex) ||
+          !Number.isInteger(totalChunks) ||
+          chunkIndex < 0 ||
+          totalChunks < 1 ||
+          chunkIndex >= totalChunks ||
+          !Buffer.isBuffer(req.body) ||
+          req.body.length === 0
+        ) {
+          res.status(400).json({ error: '分段上傳參數無效' });
+          return;
+        }
+
+        const sessionDir = path.join(CHUNKS_DIR, uploadId);
+        fs.mkdirSync(sessionDir, { recursive: true });
+        fs.writeFileSync(path.join(sessionDir, `${chunkIndex}.part`), req.body);
+
+        if (chunkIndex < totalChunks - 1) {
+          res.json({ ok: true, completed: false, chunkIndex });
+          return;
+        }
+
+        const ext = path.extname(originalName).toLowerCase() || '.mp4';
+        const isVideo = VIDEO_EXTS.has(ext);
+        const baseFileName = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}${ext}`;
+        const assembledPath = path.join(UPLOADS_DIR, baseFileName);
+        fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
+        const writeStream = fs.createWriteStream(assembledPath);
+        for (let i = 0; i < totalChunks; i += 1) {
+          const partPath = path.join(sessionDir, `${i}.part`);
+          if (!fs.existsSync(partPath)) {
+            writeStream.close();
+            fs.rmSync(sessionDir, { recursive: true, force: true });
+            res.status(400).json({ error: `缺少影片分段 ${i + 1}，請重新上傳` });
+            return;
+          }
+          const buf = fs.readFileSync(partPath);
+          await new Promise<void>((resolve, reject) => {
+            writeStream.write(buf, (err) => (err ? reject(err) : resolve()));
+          });
+        }
+        await new Promise<void>((resolve, reject) => {
+          writeStream.on('finish', () => resolve());
+          writeStream.on('error', reject);
+          writeStream.end();
+        });
+
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+
+        let finalFilename = baseFileName;
+        if (isVideo) {
+          finalFilename = await normalizeUploadedVideo(assembledPath, ext);
+        }
+        const finalSize = fs.statSync(path.join(UPLOADS_DIR, finalFilename)).size;
+
+        res.json({
+          ok: true,
+          completed: true,
+          url: `/uploads/${finalFilename}`,
+          type: isVideo ? 'video' : 'image',
+          originalName,
+          size: finalSize
+        });
+      } catch (err) {
+        res.status(500).json({
+          error: err instanceof Error ? `分段影片合併失敗：${err.message}` : '分段影片合併失敗'
+        });
+      }
+    }
+  );
 
   // Fallback JSON base64 upload endpoint (resilient if multipart is interrupted by proxy)
   app.post('/api/upload-base64', (req, res) => {

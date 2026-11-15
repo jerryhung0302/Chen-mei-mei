@@ -307,8 +307,51 @@ export function AdminDashboard({
     }
   };
 
-  // Upload video with real XHR progress bar + immediate local & server preview
-  const handleVideoFile = (files: FileList | null) => {
+  const uploadChunkXhr = (
+    uploadId: string,
+    chunkIndex: number,
+    totalChunks: number,
+    filename: string,
+    chunkBlob: Blob,
+    onProgress: (loadedBytes: number) => void
+  ): Promise<{ status: number; data: UploadResult | null; errorText?: string }> => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.withCredentials = true;
+      const params = new URLSearchParams({
+        uploadId,
+        chunkIndex: String(chunkIndex),
+        totalChunks: String(totalChunks),
+        filename
+      });
+      xhr.open('POST', `/api/upload-chunk?${params.toString()}`, true);
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress(event.loaded);
+      };
+      xhr.onload = () => {
+        const raw = xhr.responseText?.trim() || '';
+        let parsed: Record<string, unknown> | null = null;
+        if (raw && !raw.startsWith('<')) {
+          try {
+            parsed = JSON.parse(raw) as Record<string, unknown>;
+          } catch {
+            parsed = null;
+          }
+        }
+        resolve({
+          status: xhr.status,
+          data: parsed && typeof parsed.url === 'string' ? (parsed as unknown as UploadResult) : null,
+          errorText: typeof parsed?.error === 'string' ? parsed.error : undefined
+        });
+      };
+      xhr.onerror = () => reject(new Error('網路連線異常，影片上傳失敗'));
+      xhr.send(chunkBlob);
+    });
+  };
+
+  // Upload video using 2MB chunks (avoids proxy 400/413 limits) + real progress bar + local/server preview
+  const handleVideoFile = async (files: FileList | null) => {
     const file = files?.[0];
     if (!file) return;
 
@@ -322,57 +365,75 @@ export function AdminDashboard({
     setVideoMeta({ status: 'uploading', name: file.name, size: file.size });
     setPreviewGalleryIndex('video');
 
-    const fd = new FormData();
-    fd.append('file', file);
+    const CHUNK_SIZE = 2 * 1024 * 1024; // 2 MB per request
+    const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+    const uploadId = `vid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-    const xhr = new XMLHttpRequest();
-    xhr.withCredentials = true;
-    xhr.open('POST', '/api/upload', true);
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        const percent = Math.round((event.loaded / event.total) * 100);
-        setVideoUploadProgress(percent);
+    try {
+      let uploadedResult: UploadResult | null = null;
+
+      for (let i = 0; i < totalChunks; i += 1) {
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(file.size, start + CHUNK_SIZE);
+        const chunkBlob = file.slice(start, end);
+
+        const res = await uploadChunkXhr(uploadId, i, totalChunks, file.name, chunkBlob, (loaded) => {
+          const overall = Math.min(99, Math.round(((start + loaded) / Math.max(1, file.size)) * 100));
+          setVideoUploadProgress(overall);
+        });
+
+        if (res.status < 200 || res.status >= 300) {
+          if (res.status === 404 || res.status === 405) {
+            throw new BackendUnavailableError(
+              res.errorText || `目前預覽環境尚未啟用影片上傳服務（HTTP ${res.status}）`,
+              res.status
+            );
+          }
+          throw new Error(res.errorText || `影片上傳失敗（HTTP ${res.status}）`);
+        }
+
+        if (res.data?.url) {
+          uploadedResult = res.data;
+        }
       }
-    };
-    xhr.onload = () => {
+
+      if (!uploadedResult?.url) {
+        throw new Error('伺服器未回傳影片網址，請重新上傳');
+      }
+
       setVideoUploadProgress(null);
       if (videoInputRef.current) videoInputRef.current.value = '';
-      try {
-        const raw = xhr.responseText?.trim();
-        const data = raw ? JSON.parse(raw) : null;
-        if (xhr.status >= 200 && xhr.status < 300 && data?.url) {
-          URL.revokeObjectURL(blobUrl);
-          setLocalVideoPreviewUrl('');
-          setForm((prev) => ({ ...prev, videoUrl: data.url }));
-          setVideoUrlInput(data.url);
-          setVideoMeta({
-            status: 'loading',
-            name: data.originalName || file.name,
-            size: data.size || file.size
-          });
-          setPreviewGalleryIndex('video');
-          showToast('success', '商品影片已上傳至伺服器，請確認下方預覽播放');
-        } else {
-          const msg = data?.error || `影片上傳失敗（HTTP ${xhr.status}）`;
-          setVideoMeta({ status: 'error', name: file.name, size: file.size });
-          setVideoSectionError(msg);
-          showToast('error', msg);
-        }
-      } catch {
-        const msg = `影片上傳失敗（伺服器回應格式異常，HTTP ${xhr.status}）`;
-        setVideoMeta({ status: 'error', name: file.name, size: file.size });
+      URL.revokeObjectURL(blobUrl);
+      setLocalVideoPreviewUrl('');
+      setForm((prev) => ({ ...prev, videoUrl: uploadedResult!.url }));
+      setVideoUrlInput(uploadedResult.url);
+      setVideoMeta({
+        status: 'loading',
+        name: uploadedResult.originalName || file.name,
+        size: uploadedResult.size || file.size
+      });
+      setPreviewGalleryIndex('video');
+      showToast('success', '商品影片已上傳並完成相容性處理，請確認下方預覽播放');
+    } catch (err) {
+      setVideoUploadProgress(null);
+      if (videoInputRef.current) videoInputRef.current.value = '';
+
+      if (err instanceof BackendUnavailableError) {
+        // Keep local blob preview playable while clearly explaining static preview limitation
+        setVideoMeta((prev) => ({ ...prev, status: 'verified' }));
+        const msg =
+          '目前為靜態／舊版預覽環境（HTTP 404），無法儲存大型影片至伺服器；您可先於下方試看本地預覽，或改貼 YouTube／MP4 網址。';
         setVideoSectionError(msg);
         showToast('error', msg);
+        return;
       }
-    };
-    xhr.onerror = () => {
-      setVideoUploadProgress(null);
-      const msg = '網路連線異常，影片上傳失敗';
-      setVideoMeta({ status: 'error', name: file.name, size: file.size });
+
+      // Upload failed, but keep local video preview usable so codec error isn't falsely displayed
+      setVideoMeta((prev) => ({ ...prev, status: 'verified' }));
+      const msg = err instanceof Error ? err.message : '影片上傳失敗，請稍後再試';
       setVideoSectionError(msg);
       showToast('error', msg);
-    };
-    xhr.send(fd);
+    }
   };
 
   const handleAddImageUrl = () => {
@@ -1271,7 +1332,7 @@ export function AdminDashboard({
                 id="admin-video-file-input"
                 ref={videoInputRef}
                 type="file"
-                accept="video/mp4,video/webm,video/quicktime"
+                accept="video/*,.mp4,.mov,.m4v,.webm"
                 disabled={videoUploadProgress !== null}
                 onChange={(e) => handleVideoFile(e.target.files)}
                 className="sr-only"
@@ -1365,20 +1426,22 @@ export function AdminDashboard({
                 <div className="space-y-2.5 pt-2">
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                     <div className="flex items-center gap-2">
-                      {videoMeta.status === 'verified' ? (
-                        <span className="inline-flex items-center gap-1.5 font-medium text-emerald-900">
-                          <CheckCircle2 className="w-4 h-4" />
-                          影片上傳成功 · 可正常播放
-                        </span>
-                      ) : videoMeta.status === 'uploading' ? (
+                      {videoMeta.status === 'uploading' ? (
                         <span className="inline-flex items-center gap-1.5 font-medium text-zinc-700">
                           <Film className="w-4 h-4" />
-                          本地即時預覽（上傳中）
+                          本地即時預覽（分段上傳至伺服器中）
                         </span>
                       ) : videoMeta.status === 'error' ? (
                         <span className="inline-flex items-center gap-1.5 font-medium text-red-700">
                           <AlertCircle className="w-4 h-4" />
-                          影片載入異常（請改用 H.264 MP4 或 WebM 格式）
+                          瀏覽器無法解碼此影片（請改用 H.264 MP4 或 WebM 格式）
+                        </span>
+                      ) : videoMeta.status === 'verified' ? (
+                        <span className="inline-flex items-center gap-1.5 font-medium text-emerald-900">
+                          <CheckCircle2 className="w-4 h-4" />
+                          {localVideoPreviewUrl && !form.videoUrl
+                            ? '本地試播正常（尚未儲存至伺服器）'
+                            : '影片上傳成功 · 可正常播放'}
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1.5 font-medium text-zinc-700">
