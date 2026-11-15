@@ -470,7 +470,8 @@ async function startServer() {
       shippingFee,
       total: subtotal + shippingFee,
       status: '待出貨',
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      ...(typeof body.memberUid === 'string' && body.memberUid ? { memberUid: body.memberUid } : {})
     };
     store.orders.unshift(newOrder);
     saveStore(store);

@@ -1,0 +1,327 @@
+{
+  "entities": {
+    "MemberDirectory": {
+      "title": "MemberDirectory",
+      "description": "Non-PII member directory profile for storefront and admin management.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the member.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Public display name chosen during member registration.",
+          "minLength": 1,
+          "maxLength": 50
+        },
+        "photoUrl": {
+          "type": "string",
+          "description": "Optional avatar URL.",
+          "maxLength": 500
+        },
+        "memberTier": {
+          "type": "string",
+          "description": "Membership tier assigned by system or admin.",
+          "enum": ["一般會員", "VIP會員"]
+        },
+        "status": {
+          "type": "string",
+          "description": "Account activation status.",
+          "enum": ["active", "suspended"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of member registration."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last profile update."
+        }
+      },
+      "required": ["uid", "displayName", "photoUrl", "memberTier", "status", "createdAt", "updatedAt"]
+    },
+    "MemberPrivateInfo": {
+      "title": "MemberPrivateInfo",
+      "description": "Strictly isolated PII record for a registered member.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID owning this private info.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "description": "Verified member email address.",
+          "minLength": 3,
+          "maxLength": 120
+        },
+        "phone": {
+          "type": "string",
+          "description": "Contact mobile phone number.",
+          "minLength": 8,
+          "maxLength": 20
+        },
+        "defaultAddress": {
+          "type": "string",
+          "description": "Default shipping address or convenience store branch.",
+          "maxLength": 200
+        },
+        "agreedTerms": {
+          "type": "boolean",
+          "description": "Whether member accepted terms of service during registration."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of registration."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last private info update."
+        }
+      },
+      "required": ["uid", "email", "phone", "defaultAddress", "agreedTerms", "createdAt", "updatedAt"]
+    },
+    "MemberFavorite": {
+      "title": "MemberFavorite",
+      "description": "Saved wishlist product reference for a registered member.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID owning the favorite.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "productId": {
+          "type": "string",
+          "description": "ID of the favorited product.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when product was favorited."
+        }
+      },
+      "required": ["uid", "productId", "createdAt"]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Authorized backend administrator record.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the administrator.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Administrator display name.",
+          "minLength": 1,
+          "maxLength": 50
+        },
+        "grantedBy": {
+          "type": "string",
+          "description": "UID of admin who granted the privilege.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when admin access was granted."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last update."
+        }
+      },
+      "required": ["uid", "displayName", "grantedBy", "createdAt", "updatedAt"]
+    },
+    "AdminRequest": {
+      "title": "AdminRequest",
+      "description": "Backend administrator role application submitted by a registered member.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Applicant Firebase Auth UID.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Applicant display name.",
+          "minLength": 1,
+          "maxLength": 50
+        },
+        "reason": {
+          "type": "string",
+          "description": "Reason or department for requesting backend access.",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "status": {
+          "type": "string",
+          "description": "Review status of the request.",
+          "enum": ["pending", "approved", "rejected"]
+        },
+        "reviewedBy": {
+          "type": "string",
+          "description": "UID of reviewing admin, empty when pending.",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of application."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest review update."
+        }
+      },
+      "required": ["uid", "displayName", "reason", "status", "reviewedBy", "createdAt", "updatedAt"]
+    },
+    "MemberOrder": {
+      "title": "MemberOrder",
+      "description": "Order record linked to a registered member account.",
+      "type": "object",
+      "properties": {
+        "orderId": {
+          "type": "string",
+          "description": "Order document identifier.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "description": "Owner member Firebase Auth UID.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "customerName": {
+          "type": "string",
+          "description": "Recipient full name.",
+          "minLength": 1,
+          "maxLength": 50
+        },
+        "phone": {
+          "type": "string",
+          "description": "Recipient mobile phone.",
+          "minLength": 8,
+          "maxLength": 20
+        },
+        "shippingMethod": {
+          "type": "string",
+          "description": "Chosen shipping method.",
+          "enum": ["宅配到府", "7-ELEVEN 超商取貨", "全家店到店"]
+        },
+        "paymentMethod": {
+          "type": "string",
+          "description": "Chosen payment method.",
+          "enum": ["貨到付款", "信用卡一次付清", "LINE Pay"]
+        },
+        "address": {
+          "type": "string",
+          "description": "Delivery address or pickup store branch.",
+          "minLength": 2,
+          "maxLength": 200
+        },
+        "note": {
+          "type": "string",
+          "description": "Optional order note.",
+          "maxLength": 300
+        },
+        "items": {
+          "type": "array",
+          "description": "Line items included in the order."
+        },
+        "subtotal": {
+          "type": "number",
+          "description": "Subtotal amount before shipping."
+        },
+        "shippingFee": {
+          "type": "number",
+          "description": "Shipping fee in TWD."
+        },
+        "total": {
+          "type": "number",
+          "description": "Total order amount in TWD."
+        },
+        "status": {
+          "type": "string",
+          "description": "Fulfillment status of the order.",
+          "enum": ["待出貨", "已出貨", "已完成"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of order creation."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last status update."
+        }
+      },
+      "required": [
+        "orderId",
+        "uid",
+        "customerName",
+        "phone",
+        "shippingMethod",
+        "paymentMethod",
+        "address",
+        "note",
+        "items",
+        "subtotal",
+        "shippingFee",
+        "total",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/members/{uid}": {
+      "schema": { "$ref": "#/entities/MemberDirectory" },
+      "description": "Registered member directory record (non-PII)."
+    },
+    "/members/{uid}/private/info": {
+      "schema": { "$ref": "#/entities/MemberPrivateInfo" },
+      "description": "Isolated PII record belonging to a registered member."
+    },
+    "/members/{uid}/favorites/{productId}": {
+      "schema": { "$ref": "#/entities/MemberFavorite" },
+      "description": "Member wishlist items scoped to the member."
+    },
+    "/admins/{uid}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Authorized backend administrators."
+    },
+    "/admin_requests/{uid}": {
+      "schema": { "$ref": "#/entities/AdminRequest" },
+      "description": "Member applications requesting backend admin permissions."
+    },
+    "/member_orders/{orderId}": {
+      "schema": { "$ref": "#/entities/MemberOrder" },
+      "description": "Storefront orders placed by registered members."
+    }
+  }
+}

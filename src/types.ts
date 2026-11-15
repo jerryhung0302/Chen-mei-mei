@@ -51,4 +51,74 @@ export interface Order {
   total: number;
   status: OrderStatus;
   createdAt: string;
+  memberUid?: string;
 }
+
+export type MemberTier = '一般會員' | 'VIP會員';
+export type MemberStatus = 'active' | 'suspended';
+
+export interface MemberDirectory {
+  uid: string;
+  displayName: string;
+  photoUrl: string;
+  memberTier: MemberTier;
+  status: MemberStatus;
+  createdAt: unknown;
+  updatedAt: unknown;
+}
+
+export interface MemberPrivateInfo {
+  uid: string;
+  email: string;
+  phone: string;
+  defaultAddress: string;
+  agreedTerms: boolean;
+  createdAt: unknown;
+  updatedAt: unknown;
+}
+
+export interface MemberProfile extends MemberDirectory {
+  email: string;
+  phone: string;
+  defaultAddress: string;
+  agreedTerms: boolean;
+}
+
+export interface AdminRecord {
+  uid: string;
+  displayName: string;
+  grantedBy: string;
+  createdAt: unknown;
+  updatedAt: unknown;
+}
+
+export type AdminRequestStatus = 'pending' | 'approved' | 'rejected';
+
+export interface AdminRequest {
+  uid: string;
+  displayName: string;
+  reason: string;
+  status: AdminRequestStatus;
+  reviewedBy: string;
+  createdAt: unknown;
+  updatedAt: unknown;
+}
+
+export interface MemberOrderRecord {
+  orderId: string;
+  uid: string;
+  customerName: string;
+  phone: string;
+  shippingMethod: ShippingMethod;
+  paymentMethod: PaymentMethod;
+  address: string;
+  note: string;
+  items: CartItem[];
+  subtotal: number;
+  shippingFee: number;
+  total: number;
+  status: OrderStatus;
+  createdAt: unknown;
+  updatedAt: unknown;
+}
+

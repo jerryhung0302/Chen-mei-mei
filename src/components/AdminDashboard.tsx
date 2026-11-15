@@ -8,16 +8,34 @@ import {
   Film,
   ImagePlus,
   Link2,
+  Lock,
   Maximize2,
   Package,
   Plus,
   Search,
+  ShieldCheck,
   Trash2,
   Upload,
+  UserPlus,
+  Users,
   Video,
   X
 } from 'lucide-react';
-import type { Order, OrderStatus, Product, ProductCategory, ProductSpec } from '../types';
+import {
+  collection,
+  doc,
+  onSnapshot,
+  serverTimestamp,
+  updateDoc
+} from 'firebase/firestore';
+import type {
+  MemberOrderRecord,
+  Order,
+  OrderStatus,
+  Product,
+  ProductCategory,
+  ProductSpec
+} from '../types';
 import {
   BackendUnavailableError,
   fileToDataUrl,
@@ -27,6 +45,14 @@ import {
   setLocalProducts,
   updateLocalOrderStatus
 } from '../lib/apiClient';
+import {
+  OperationType,
+  db,
+  formatFirestoreTimestamp,
+  handleFirestoreError
+} from '../lib/firebase';
+import { useAuth } from '../context/AuthContext';
+import { AdminMembersPanel } from './AdminMembersPanel';
 import { MediaImage } from './MediaImage';
 import { VideoPlayer } from './VideoPlayer';
 
@@ -35,9 +61,10 @@ interface AdminDashboardProps {
   orders: Order[];
   onRefresh: () => Promise<void>;
   onPreviewProduct: (product: Product) => void;
+  onBackToStore?: () => void;
 }
 
-type AdminTab = 'list' | 'editor' | 'orders';
+type AdminTab = 'list' | 'editor' | 'orders' | 'members';
 
 const CATEGORIES: Exclude<ProductCategory, '全部'>[] = [
   '旅館住宿',
@@ -114,9 +141,30 @@ export function AdminDashboard({
   products,
   orders,
   onRefresh,
-  onPreviewProduct
+  onPreviewProduct,
+  onBackToStore
 }: AdminDashboardProps) {
+  const {
+    authReady,
+    user,
+    memberProfile,
+    memberLoading,
+    isRegistered,
+    isAdmin,
+    adminRequest,
+    authError,
+    openMemberModal,
+    signInWithGoogle,
+    submitAdminRequest
+  } = useAuth();
+
   const [activeTab, setActiveTab] = useState<AdminTab>('list');
+  const [cloudOrders, setCloudOrders] = useState<MemberOrderRecord[]>([]);
+  const [requestReason, setRequestReason] = useState('');
+  const [requestBusy, setRequestBusy] = useState(false);
+  const [requestMsg, setRequestMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(
+    null
+  );
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'published' | 'draft'>('all');
   const [form, setForm] = useState<ProductFormState>(EMPTY_FORM);
@@ -161,6 +209,24 @@ export function AdminDashboard({
       if (localVideoPreviewUrl) URL.revokeObjectURL(localVideoPreviewUrl);
     };
   }, [localVideoPreviewUrl]);
+
+  useEffect(() => {
+    if (!authReady || !user || !isAdmin) {
+      setCloudOrders([]);
+      return;
+    }
+    const unsub = onSnapshot(
+      collection(db, 'member_orders'),
+      (snap) => {
+        const list = snap.docs.map((d) => d.data() as MemberOrderRecord);
+        setCloudOrders(list);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'member_orders');
+      }
+    );
+    return () => unsub();
+  }, [authReady, user, isAdmin]);
 
   const formatBytes = (bytes?: number) => {
     if (!bytes) return '';
@@ -626,19 +692,33 @@ export function AdminDashboard({
 
   const handleUpdateOrderStatus = async (orderId: string, status: OrderStatus) => {
     try {
-      try {
-        const res = await fetch(`/api/orders/${orderId}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'same-origin',
-          body: JSON.stringify({ status })
-        });
-        await parseApiJson<Order>(res, '訂單狀態更新失敗');
-      } catch (err) {
-        if (err instanceof BackendUnavailableError) {
-          updateLocalOrderStatus(orderId, status);
-        } else {
-          throw err;
+      const isCloudOrder = cloudOrders.some((co) => co.orderId === orderId);
+      if (isCloudOrder) {
+        try {
+          await updateDoc(doc(db, 'member_orders', orderId), {
+            status,
+            updatedAt: serverTimestamp()
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.UPDATE, `member_orders/${orderId}`);
+        }
+      }
+
+      if (orders.some((o) => o.id === orderId)) {
+        try {
+          const res = await fetch(`/api/orders/${orderId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ status })
+          });
+          await parseApiJson<Order>(res, '訂單狀態更新失敗');
+        } catch (err) {
+          if (err instanceof BackendUnavailableError) {
+            updateLocalOrderStatus(orderId, status);
+          } else if (!isCloudOrder) {
+            throw err;
+          }
         }
       }
       await onRefresh();
@@ -647,6 +727,34 @@ export function AdminDashboard({
       showToast('error', '更新訂單狀態失敗');
     }
   };
+
+  const mergedOrders: Order[] = (() => {
+    const map = new Map<string, Order>();
+    for (const co of cloudOrders) {
+      map.set(co.orderId, {
+        id: co.orderId,
+        customerName: co.customerName,
+        phone: co.phone,
+        shippingMethod: co.shippingMethod,
+        paymentMethod: co.paymentMethod,
+        address: co.address,
+        note: co.note,
+        items: co.items,
+        subtotal: co.subtotal,
+        shippingFee: co.shippingFee,
+        total: co.total,
+        status: co.status,
+        createdAt: formatFirestoreTimestamp(co.createdAt),
+        memberUid: co.uid
+      });
+    }
+    for (const o of orders) {
+      if (!map.has(o.id)) {
+        map.set(o.id, o);
+      }
+    }
+    return Array.from(map.values());
+  })();
 
   const filteredProducts = products.filter((p) => {
     const matchesQuery =
@@ -660,6 +768,197 @@ export function AdminDashboard({
     return matchesQuery && matchesStatus;
   });
 
+  const handleRequestAdminSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setRequestMsg(null);
+    setRequestBusy(true);
+    try {
+      await submitAdminRequest(requestReason);
+      setRequestMsg({ type: 'success', text: '已送出後台管理員權限申請，請靜候現任管理員審核。' });
+      setRequestReason('');
+    } catch (err) {
+      setRequestMsg({
+        type: 'error',
+        text: err instanceof Error ? err.message : '申請送出失敗，請稍後再試'
+      });
+    } finally {
+      setRequestBusy(false);
+    }
+  };
+
+  if (!authReady || (user && memberLoading)) {
+    return (
+      <div className="max-w-xl mx-auto px-4 py-16 text-center text-sm text-zinc-500">
+        正在驗證後台會員與管理員權限...
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="max-w-lg mx-auto px-4 py-12 sm:py-16 pb-24">
+        <div className="bg-white rounded-2xl border border-zinc-200 p-6 sm:p-8 space-y-5 text-center shadow-xs">
+          <div className="w-12 h-12 rounded-2xl bg-emerald-950 text-white flex items-center justify-center mx-auto">
+            <Lock className="w-6 h-6" strokeWidth={1.75} />
+          </div>
+          <div className="space-y-1.5">
+            <h1 className="text-xl font-semibold text-zinc-900">後台管理系統 · 會員驗證登入</h1>
+            <p className="text-xs sm:text-sm text-zinc-600 leading-relaxed">
+              為確保商店商品上稿、媒體上傳與顧客訂單資料安全，進入後台前請先登入並完成會員驗證。
+            </p>
+          </div>
+
+          {authError && (
+            <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs text-red-700 text-left">
+              {authError}
+            </div>
+          )}
+
+          <div className="space-y-2.5 pt-1">
+            <button
+              type="button"
+              onClick={() => void signInWithGoogle()}
+              className="w-full min-h-[48px] px-5 rounded-xl bg-emerald-950 hover:bg-emerald-900 text-white text-sm font-medium transition-colors flex items-center justify-center gap-2"
+            >
+              <UserPlus className="w-4 h-4" />
+              <span>使用 Google 帳號登入／註冊</span>
+            </button>
+            {onBackToStore && (
+              <button
+                type="button"
+                onClick={onBackToStore}
+                className="w-full min-h-[44px] px-5 rounded-xl border border-zinc-300 bg-white text-zinc-700 text-sm font-medium"
+              >
+                返回前台商店
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAdmin && !isRegistered) {
+    return (
+      <div className="max-w-lg mx-auto px-4 py-12 sm:py-16 pb-24">
+        <div className="bg-white rounded-2xl border border-zinc-200 p-6 sm:p-8 space-y-5 text-center shadow-xs">
+          <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-900 flex items-center justify-center mx-auto">
+            <UserPlus className="w-6 h-6" strokeWidth={1.75} />
+          </div>
+          <div className="space-y-1.5">
+            <h1 className="text-xl font-semibold text-zinc-900">請先完成全站會員註冊</h1>
+            <p className="text-xs sm:text-sm text-zinc-600 leading-relaxed">
+              您已登入（{user.email}），請先填寫會員註冊資料，完成後即可在前台快速結帳或申請後台管理員權限。
+            </p>
+          </div>
+          <div className="space-y-2.5">
+            <button
+              type="button"
+              onClick={() => openMemberModal('register')}
+              className="w-full min-h-[48px] px-5 rounded-xl bg-emerald-950 hover:bg-emerald-900 text-white text-sm font-medium transition-colors"
+            >
+              填寫會員註冊資料
+            </button>
+            {onBackToStore && (
+              <button
+                type="button"
+                onClick={onBackToStore}
+                className="w-full min-h-[44px] px-5 rounded-xl border border-zinc-300 bg-white text-zinc-700 text-sm font-medium"
+              >
+                返回前台商店
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAdmin) {
+    return (
+      <div className="max-w-lg mx-auto px-4 py-12 sm:py-16 pb-24">
+        <div className="bg-white rounded-2xl border border-zinc-200 p-6 sm:p-8 space-y-5 shadow-xs">
+          <div className="flex items-start gap-3">
+            <div className="w-11 h-11 rounded-xl bg-zinc-100 text-zinc-700 flex items-center justify-center shrink-0">
+              <ShieldCheck className="w-5 h-5" />
+            </div>
+            <div>
+              <h1 className="text-lg font-semibold text-zinc-900">後台管理員權限驗證</h1>
+              <p className="text-xs text-zinc-500 mt-0.5">
+                目前登入會員：{memberProfile?.displayName}（{user.email}）· {memberProfile?.memberTier}
+              </p>
+            </div>
+          </div>
+
+          <p className="text-xs sm:text-sm text-zinc-600 leading-relaxed">
+            此帳號已完成全站會員註冊，但目前為一般前台會員權限，尚未具備後台商品上稿與訂單管理權限。如需協作管理後台，請填寫下方申請送交管理員核准。
+          </p>
+
+          {requestMsg && (
+            <div
+              className={`p-3 rounded-xl border text-xs ${
+                requestMsg.type === 'success'
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-950'
+                  : 'bg-red-50 border-red-200 text-red-700'
+              }`}
+            >
+              {requestMsg.text}
+            </div>
+          )}
+
+          {adminRequest?.status === 'pending' ? (
+            <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-950 space-y-1">
+              <p className="font-semibold">管理員權限申請審核中</p>
+              <p>申請說明：{adminRequest.reason}</p>
+              <p className="text-amber-800/80">
+                送出時間：{formatFirestoreTimestamp(adminRequest.createdAt)}
+              </p>
+            </div>
+          ) : (
+            <form onSubmit={handleRequestAdminSubmit} className="space-y-3">
+              {adminRequest?.status === 'rejected' && (
+                <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs text-red-700">
+                  先前申請未獲核准，您可補充說明後重新提出申請。
+                </div>
+              )}
+              <div>
+                <label className="block text-xs font-semibold text-zinc-700 mb-1.5">
+                  申請原因／職務說明 *
+                </label>
+                <textarea
+                  rows={3}
+                  required
+                  maxLength={300}
+                  value={requestReason}
+                  onChange={(e) => setRequestReason(e.target.value)}
+                  placeholder="例如：門市營運人員，協助商品圖片與影片上稿更新"
+                  className="w-full p-3 rounded-xl border border-zinc-300 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-900"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={requestBusy}
+                className="w-full min-h-[46px] rounded-xl bg-emerald-950 hover:bg-emerald-900 text-white text-sm font-medium transition-colors disabled:opacity-50"
+              >
+                {requestBusy ? '申請送出中...' : '申請開通後台管理員權限'}
+              </button>
+            </form>
+          )}
+
+          {onBackToStore && (
+            <button
+              type="button"
+              onClick={onBackToStore}
+              className="w-full min-h-[44px] rounded-xl border border-zinc-300 bg-white text-zinc-700 text-sm font-medium"
+            >
+              返回前台商店瀏覽
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-10 pb-24 md:pb-16 space-y-6">
       {/* Header & Primary Action */}
@@ -667,7 +966,7 @@ export function AdminDashboard({
         <div>
           <h1 className="text-xl sm:text-2xl font-semibold text-zinc-900">後台商品上稿與管理</h1>
           <p className="text-xs sm:text-sm text-zinc-500 mt-1">
-            管理商品名稱、多圖上傳、商品影片上稿與訂單出貨狀態，變更將即時同步至前台商店。
+            管理商品名稱、多圖上傳、商品影片上稿、訂單出貨狀態與全站會員名冊，變更將即時同步至前台商店。
           </p>
         </div>
 
@@ -680,6 +979,22 @@ export function AdminDashboard({
           <span>新增商品上稿</span>
         </button>
       </div>
+
+      {/* Prompt bootstrap admin to complete optional member profile if not registered yet */}
+      {!isRegistered && (
+        <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-950 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+          <span>
+            您目前以預設管理員帳號（{user.email}）進入後台，建議同步完成會員資料註冊以參與前台結帳與名冊管理。
+          </span>
+          <button
+            type="button"
+            onClick={() => openMemberModal('register')}
+            className="min-h-[36px] px-3 py-1.5 rounded-lg bg-amber-900 text-white font-medium shrink-0 self-start sm:self-auto"
+          >
+            補齊會員資料
+          </button>
+        </div>
+      )}
 
       {/* Feedback Banner */}
       {feedback && (
@@ -703,11 +1018,11 @@ export function AdminDashboard({
       )}
 
       {/* Segmented Navigation Tabs */}
-      <div className="flex items-center gap-1 p-1 bg-zinc-100 rounded-xl w-full sm:w-fit">
+      <div className="flex items-center gap-1 p-1 bg-zinc-100 rounded-xl w-full sm:w-fit overflow-x-auto no-scrollbar">
         <button
           type="button"
           onClick={() => setActiveTab('list')}
-          className={`flex-1 sm:flex-none min-h-[40px] px-4 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+          className={`flex-1 sm:flex-none min-h-[40px] px-3.5 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
             activeTab === 'list'
               ? 'bg-white text-zinc-900 shadow-xs'
               : 'text-zinc-600 hover:text-zinc-900'
@@ -718,7 +1033,7 @@ export function AdminDashboard({
         <button
           type="button"
           onClick={() => setActiveTab('editor')}
-          className={`flex-1 sm:flex-none min-h-[40px] px-4 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+          className={`flex-1 sm:flex-none min-h-[40px] px-3.5 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
             activeTab === 'editor'
               ? 'bg-white text-zinc-900 shadow-xs'
               : 'text-zinc-600 hover:text-zinc-900'
@@ -729,13 +1044,25 @@ export function AdminDashboard({
         <button
           type="button"
           onClick={() => setActiveTab('orders')}
-          className={`flex-1 sm:flex-none min-h-[40px] px-4 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+          className={`flex-1 sm:flex-none min-h-[40px] px-3.5 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
             activeTab === 'orders'
               ? 'bg-white text-zinc-900 shadow-xs'
               : 'text-zinc-600 hover:text-zinc-900'
           }`}
         >
-          訂單管理 ({orders.length})
+          訂單管理 ({mergedOrders.length})
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('members')}
+          className={`flex-1 sm:flex-none min-h-[40px] px-3.5 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors whitespace-nowrap inline-flex items-center justify-center gap-1.5 ${
+            activeTab === 'members'
+              ? 'bg-white text-zinc-900 shadow-xs'
+              : 'text-zinc-600 hover:text-zinc-900'
+          }`}
+        >
+          <Users className="w-3.5 h-3.5" />
+          <span>會員管理</span>
         </button>
       </div>
 
@@ -1772,14 +2099,14 @@ export function AdminDashboard({
       {/* TAB 3: ORDERS MANAGEMENT */}
       {activeTab === 'orders' && (
         <div className="space-y-4">
-          {orders.length === 0 ? (
+          {mergedOrders.length === 0 ? (
             <div className="py-16 text-center bg-white rounded-2xl border border-zinc-200">
               <p className="text-sm font-medium text-zinc-800">目前尚無顧客訂單</p>
               <p className="text-xs text-zinc-500 mt-1">顧客於前台完成結帳後，訂單紀錄將即時顯示於此處。</p>
             </div>
           ) : (
             <div className="space-y-3">
-              {orders.map((order) => (
+              {mergedOrders.map((order) => (
                 <div
                   key={order.id}
                   className="bg-white rounded-2xl border border-zinc-200 p-4 sm:p-5 space-y-3"
@@ -1791,7 +2118,17 @@ export function AdminDashboard({
                           #{order.id}
                         </span>
                         <span aria-hidden="true">·</span>
-                        <span>{new Date(order.createdAt).toLocaleString('zh-TW')}</span>
+                        <span>
+                          {order.createdAt.includes('T')
+                            ? new Date(order.createdAt).toLocaleString('zh-TW')
+                            : order.createdAt}
+                        </span>
+                        {order.memberUid && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span className="text-emerald-900 font-medium">會員訂單</span>
+                          </>
+                        )}
                       </div>
                       <p className="text-sm font-medium text-zinc-900 mt-1">
                         {order.customerName}（{order.phone}）— {order.shippingMethod} /{' '}
@@ -1836,6 +2173,9 @@ export function AdminDashboard({
           )}
         </div>
       )}
+
+      {/* TAB 4: MEMBER & RBAC MANAGEMENT */}
+      {activeTab === 'members' && <AdminMembersPanel onNotify={showToast} />}
 
       {/* Admin Media Lightbox / Verification Modal */}
       {lightboxMedia && (

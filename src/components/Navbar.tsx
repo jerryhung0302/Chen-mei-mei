@@ -1,4 +1,5 @@
-import { Heart, Home, LayoutGrid, ShoppingBag, SlidersHorizontal, Search } from 'lucide-react';
+import { Heart, Home, LayoutGrid, ShoppingBag, SlidersHorizontal, Search, User, UserCheck } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
 export type AppView = 'home' | 'catalog' | 'craft' | 'detail' | 'admin';
 
@@ -25,6 +26,8 @@ export function Navbar({
   onFocusSearch,
   hideMobileBottomNav = false
 }: NavbarProps) {
+  const { user, memberProfile, isRegistered, openMemberModal } = useAuth();
+
   const navItems: { id: AppView; label: string }[] = [
     { id: 'home', label: '首頁精選' },
     { id: 'catalog', label: '全部商品' },
@@ -32,23 +35,33 @@ export function Navbar({
     { id: 'admin', label: '後台管理' }
   ];
 
+  const handleOpenMember = () => {
+    if (user && !isRegistered) {
+      openMemberModal('register');
+    } else {
+      openMemberModal('profile');
+    }
+  };
+
   return (
     <>
       {/* Desktop & Mobile Top Bar (<= 52px on mobile, 64px on desktop) */}
       <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-zinc-200/80">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-[52px] md:h-16 flex items-center justify-between gap-4 md:gap-8">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 h-[52px] md:h-16 flex items-center justify-between gap-2 md:gap-6">
           {/* Zone 1: Brand Logo & Wordmark */}
           <button
             type="button"
             onClick={() => onNavigate('home')}
-            className="text-base md:text-lg font-semibold tracking-tight text-zinc-900 whitespace-nowrap shrink-0 min-h-[44px] flex items-center gap-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-900 rounded"
+            className="text-base md:text-lg font-semibold tracking-tight text-zinc-900 whitespace-nowrap shrink-0 min-h-[44px] flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-900 rounded"
           >
             <img
               src="/assets/aistudio/FB_IMG_1794753729819_545d87ba.jpg"
               alt="質物選研 ZHIWU Logo"
               className="w-8 h-8 md:w-9 md:h-9 rounded-full object-cover border border-zinc-200 shrink-0"
             />
-            <span>質物選研 ZHIWU</span>
+            <span>
+              質物選研<span className="hidden sm:inline"> ZHIWU</span>
+            </span>
           </button>
 
           {/* Zone 2: Desktop 4 Single-line Nav Links */}
@@ -73,15 +86,54 @@ export function Navbar({
             })}
           </nav>
 
-          {/* Zone 3: Search (mobile), Favorites List Trigger, and Cart */}
-          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          {/* Zone 3: Search (mobile), Member, Favorites List Trigger, and Cart */}
+          <div className="flex items-center gap-1 sm:gap-2 shrink-0">
             <button
               type="button"
               onClick={onFocusSearch}
               aria-label="搜尋商品"
-              className="md:hidden min-h-[44px] min-w-[44px] flex items-center justify-center text-zinc-700 hover:text-zinc-900 rounded-lg"
+              className="md:hidden min-h-[44px] min-w-[40px] flex items-center justify-center text-zinc-700 hover:text-zinc-900 rounded-lg"
             >
-              <Search className="w-5 h-5" strokeWidth={1.75} />
+              <Search className="w-4.5 h-4.5" strokeWidth={1.75} />
+            </button>
+
+            <button
+              type="button"
+              onClick={handleOpenMember}
+              aria-label={
+                !user
+                  ? '會員註冊／登入'
+                  : !isRegistered
+                    ? '完成會員註冊'
+                    : `會員中心：${memberProfile?.displayName || ''}`
+              }
+              className={`min-h-[44px] md:min-h-[40px] px-2.5 md:px-3 py-2 rounded-lg border text-xs md:text-sm font-medium transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                user && !isRegistered
+                  ? 'border-amber-300 bg-amber-50 text-amber-900'
+                  : isRegistered
+                    ? 'border-emerald-900/30 bg-emerald-50/70 text-emerald-950 hover:border-emerald-900/50'
+                    : 'border-zinc-200 bg-white text-zinc-700 hover:border-zinc-400 hover:text-zinc-900'
+              }`}
+            >
+              {isRegistered && memberProfile?.photoUrl ? (
+                <img
+                  src={memberProfile.photoUrl}
+                  alt={memberProfile.displayName}
+                  referrerPolicy="no-referrer"
+                  className="w-4 h-4 rounded-full object-cover shrink-0"
+                />
+              ) : isRegistered ? (
+                <UserCheck className="w-4 h-4 text-emerald-900 shrink-0" strokeWidth={1.85} />
+              ) : (
+                <User className="w-4 h-4 shrink-0" strokeWidth={1.85} />
+              )}
+              <span className="hidden sm:inline max-w-[110px] truncate">
+                {!user
+                  ? '註冊／登入'
+                  : !isRegistered
+                    ? '完成註冊'
+                    : memberProfile?.displayName || '會員中心'}
+              </span>
             </button>
 
             <button
@@ -89,7 +141,7 @@ export function Navbar({
               onClick={onToggleFavorites}
               aria-expanded={favoritesOpen}
               aria-label={`收藏列表 (${favoriteCount})`}
-              className={`min-h-[44px] md:min-h-[40px] px-2.5 md:px-3.5 py-2 rounded-lg border text-xs md:text-sm font-medium transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+              className={`min-h-[44px] md:min-h-[40px] px-2.5 md:px-3 py-2 rounded-lg border text-xs md:text-sm font-medium transition-colors flex items-center gap-1 whitespace-nowrap shrink-0 ${
                 favoritesOpen
                   ? 'border-rose-300 bg-rose-50 text-rose-800'
                   : 'border-zinc-200 bg-white text-zinc-700 hover:border-zinc-400 hover:text-zinc-900'
@@ -108,10 +160,10 @@ export function Navbar({
             <button
               type="button"
               onClick={onOpenCart}
-              className="min-h-[44px] md:min-h-[40px] px-3 md:px-4 py-2 bg-emerald-950 text-white text-xs md:text-sm font-medium rounded-lg hover:bg-emerald-900 active:scale-[0.98] transition-all flex items-center gap-2 whitespace-nowrap shrink-0"
+              className="min-h-[44px] md:min-h-[40px] px-2.5 md:px-4 py-2 bg-emerald-950 text-white text-xs md:text-sm font-medium rounded-lg hover:bg-emerald-900 active:scale-[0.98] transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0"
             >
-              <ShoppingBag className="w-4 h-4" strokeWidth={1.75} />
-              <span>購物車</span>
+              <ShoppingBag className="w-4 h-4 shrink-0" strokeWidth={1.75} />
+              <span className="hidden xs:inline sm:inline">購物車</span>
               <span className="tabular-nums font-semibold">({cartCount})</span>
             </button>
           </div>

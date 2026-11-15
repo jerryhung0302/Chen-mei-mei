@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { CheckCircle2, Minus, Plus, ShoppingBag, Trash2, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { CheckCircle2, Minus, Plus, ShoppingBag, Trash2, UserCheck, UserPlus, X } from 'lucide-react';
 import type { CartItem, Order, PaymentMethod, ShippingMethod } from '../types';
 import {
   BackendUnavailableError,
@@ -7,6 +7,7 @@ import {
   parseApiJson,
   setLocalOrders
 } from '../lib/apiClient';
+import { useAuth } from '../context/AuthContext';
 import { MediaImage } from './MediaImage';
 
 interface CartDrawerProps {
@@ -28,6 +29,8 @@ export function CartDrawer({
   onClearCart,
   onOrderCreated
 }: CartDrawerProps) {
+  const { user, memberProfile, isRegistered, openMemberModal, saveMemberOrderToCloud } = useAuth();
+
   const [step, setStep] = useState<'cart' | 'checkout' | 'success'>('cart');
   const [customerName, setCustomerName] = useState('');
   const [phone, setPhone] = useState('');
@@ -38,6 +41,14 @@ export function CartDrawer({
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [confirmedOrder, setConfirmedOrder] = useState<Order | null>(null);
+
+  useEffect(() => {
+    if (isOpen && step === 'checkout' && memberProfile) {
+      setCustomerName((prev) => prev || memberProfile.displayName);
+      setPhone((prev) => prev || memberProfile.phone);
+      setAddress((prev) => prev || memberProfile.defaultAddress);
+    }
+  }, [isOpen, step, memberProfile]);
 
   if (!isOpen) return null;
 
@@ -79,7 +90,8 @@ export function CartDrawer({
             paymentMethod,
             address,
             note,
-            items
+            items,
+            memberUid: user?.uid
           })
         });
         createdOrder = await parseApiJson<Order>(res, '訂單建立失敗');
@@ -98,13 +110,23 @@ export function CartDrawer({
             shippingFee,
             total,
             status: '待出貨',
-            createdAt: new Date().toISOString()
+            createdAt: new Date().toISOString(),
+            memberUid: user?.uid
           };
           setLocalOrders([createdOrder, ...getLocalOrders()]);
         } else {
           throw err;
         }
       }
+
+      if (isRegistered && memberProfile?.status === 'active') {
+        try {
+          await saveMemberOrderToCloud(createdOrder);
+        } catch {
+          // Do not fail checkout confirmation if cloud sync encounters a transient rule/network issue
+        }
+      }
+
       setConfirmedOrder(createdOrder);
       onOrderCreated(createdOrder);
       onClearCart();
@@ -250,6 +272,27 @@ export function CartDrawer({
 
           {step === 'checkout' && (
             <form id="checkout-form" onSubmit={handleSubmitOrder} className="space-y-4">
+              {isRegistered && memberProfile ? (
+                <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-950 flex items-center gap-2">
+                  <UserCheck className="w-4 h-4 text-emerald-800 shrink-0" />
+                  <span>
+                    已登入會員 <strong>{memberProfile.displayName}</strong>，訂單將自動保存至會員中心
+                  </span>
+                </div>
+              ) : (
+                <div className="p-3 rounded-xl bg-zinc-50 border border-zinc-200 text-xs text-zinc-700 flex items-center justify-between gap-2">
+                  <span>註冊／登入會員可自動帶入地址並追蹤訂單進度</span>
+                  <button
+                    type="button"
+                    onClick={() => openMemberModal(user ? 'register' : 'profile')}
+                    className="px-2.5 py-1.5 rounded-lg bg-emerald-950 text-white font-medium shrink-0 inline-flex items-center gap-1"
+                  >
+                    <UserPlus className="w-3.5 h-3.5" />
+                    <span>{user ? '完成註冊' : '會員登入'}</span>
+                  </button>
+                </div>
+              )}
+
               {errorMsg && (
                 <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
                   {errorMsg}

@@ -1,0 +1,292 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 0: Default-deny global safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Global Hardened Primitives ---
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isBootstrapAdmin() {
+      return isSignedIn() && request.auth.token.email == 'jerryhung0302@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrapAdmin() || (
+        isSignedIn() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isActiveMember(uid) {
+      return exists(/databases/$(database)/documents/members/$(uid)) &&
+        get(/databases/$(database)/documents/members/$(uid)).data.status == 'active';
+    }
+
+    // --- Validation Blueprints ---
+    function isValidMemberDirectory(data, uid) {
+      return data.keys().hasAll(['uid', 'displayName', 'photoUrl', 'memberTier', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'displayName', 'photoUrl', 'memberTier', 'status', 'createdAt', 'updatedAt']) &&
+        data.uid is string && data.uid == uid && isValidId(data.uid) &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 50 &&
+        data.photoUrl is string && data.photoUrl.size() <= 500 &&
+        data.memberTier in ['一般會員', 'VIP會員'] &&
+        data.status in ['active', 'suspended'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidMemberPrivateInfo(data, uid) {
+      return data.keys().hasAll(['uid', 'email', 'phone', 'defaultAddress', 'agreedTerms', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'phone', 'defaultAddress', 'agreedTerms', 'createdAt', 'updatedAt']) &&
+        data.uid is string && data.uid == uid && isValidId(data.uid) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 120 &&
+        data.phone is string && data.phone.size() >= 8 && data.phone.size() <= 20 &&
+        data.defaultAddress is string && data.defaultAddress.size() <= 200 &&
+        data.agreedTerms is bool && data.agreedTerms == true &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidMemberFavorite(data, uid, productId) {
+      return data.keys().hasAll(['uid', 'productId', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'productId', 'createdAt']) &&
+        data.uid is string && data.uid == uid && isValidId(data.uid) &&
+        data.productId is string && data.productId == productId && isValidId(data.productId) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidAdminRecord(data, uid) {
+      return data.keys().hasAll(['uid', 'displayName', 'grantedBy', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'displayName', 'grantedBy', 'createdAt', 'updatedAt']) &&
+        data.uid is string && data.uid == uid && isValidId(data.uid) &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 50 &&
+        data.grantedBy is string && isValidId(data.grantedBy) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAdminRequest(data, uid) {
+      return data.keys().hasAll(['uid', 'displayName', 'reason', 'status', 'reviewedBy', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'displayName', 'reason', 'status', 'reviewedBy', 'createdAt', 'updatedAt']) &&
+        data.uid is string && data.uid == uid && isValidId(data.uid) &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 50 &&
+        data.reason is string && data.reason.size() >= 1 && data.reason.size() <= 300 &&
+        data.status in ['pending', 'approved', 'rejected'] &&
+        data.reviewedBy is string && data.reviewedBy.size() <= 128 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidMemberOrder(data, orderId) {
+      return data.keys().hasAll([
+          'orderId', 'uid', 'customerName', 'phone', 'shippingMethod',
+          'paymentMethod', 'address', 'note', 'items', 'subtotal',
+          'shippingFee', 'total', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'orderId', 'uid', 'customerName', 'phone', 'shippingMethod',
+          'paymentMethod', 'address', 'note', 'items', 'subtotal',
+          'shippingFee', 'total', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.orderId is string && data.orderId == orderId && isValidId(data.orderId) &&
+        data.uid is string && isValidId(data.uid) &&
+        data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 50 &&
+        data.phone is string && data.phone.size() >= 8 && data.phone.size() <= 20 &&
+        data.shippingMethod in ['宅配到府', '7-ELEVEN 超商取貨', '全家店到店'] &&
+        data.paymentMethod in ['貨到付款', '信用卡一次付清', 'LINE Pay'] &&
+        data.address is string && data.address.size() >= 2 && data.address.size() <= 200 &&
+        data.note is string && data.note.size() <= 300 &&
+        data.items is list && data.items.size() >= 1 && data.items.size() <= 50 && data.items[0] is map &&
+        data.subtotal is number && data.subtotal > 0 &&
+        data.shippingFee is number && (
+          (data.subtotal >= 2000 && data.shippingFee == 0) ||
+          (data.subtotal < 2000 && data.shippingFee == 120)
+        ) &&
+        data.total is number && data.total == data.subtotal + data.shippingFee &&
+        data.status in ['待出貨', '已出貨', '已完成'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // --- Collection Match Rules ---
+    match /members/{uid} {
+      allow get: if isSignedIn() && isValidId(uid) && (isOwner(uid) || isAdmin());
+      allow list: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+
+      allow create: if isOwner(uid) &&
+        isValidId(uid) &&
+        isValidMemberDirectory(incoming(), uid) &&
+        incoming().memberTier == '一般會員' &&
+        incoming().status == 'active' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isSignedIn() &&
+        isValidId(uid) &&
+        isValidMemberDirectory(incoming(), uid) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          (
+            isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['memberTier', 'status', 'updatedAt'])
+          ) || (
+            isOwner(uid) &&
+            existing().status == 'active' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoUrl', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isSignedIn() && isValidId(uid) && isAdmin();
+
+      // Strictly isolated PII subcollection
+      match /private/info {
+        allow get: if isSignedIn() && isValidId(uid) && (isOwner(uid) || isAdmin());
+        allow list: if false;
+
+        allow create: if isOwner(uid) &&
+          isValidId(uid) &&
+          isValidMemberPrivateInfo(incoming(), uid) &&
+          incoming().email == request.auth.token.email &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          existsAfter(/databases/$(database)/documents/members/$(uid));
+
+        allow update: if isOwner(uid) &&
+          isValidId(uid) &&
+          isValidMemberPrivateInfo(incoming(), uid) &&
+          incoming().uid == existing().uid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().email == existing().email &&
+          incoming().agreedTerms == existing().agreedTerms &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['phone', 'defaultAddress', 'updatedAt']) &&
+          isActiveMember(uid);
+
+        allow delete: if isSignedIn() && isValidId(uid) && isAdmin();
+      }
+
+      // Member wishlist / favorites subcollection
+      match /favorites/{productId} {
+        allow get: if isOwner(uid) && isValidId(uid) && isValidId(productId);
+        allow list: if isSignedIn() && resource.data.uid == request.auth.uid;
+
+        allow create: if isOwner(uid) &&
+          isValidId(uid) &&
+          isValidId(productId) &&
+          isValidMemberFavorite(incoming(), uid, productId) &&
+          incoming().createdAt == request.time &&
+          isActiveMember(uid);
+
+        allow update: if false;
+        allow delete: if isOwner(uid) && isValidId(uid) && isValidId(productId);
+      }
+    }
+
+    match /admins/{uid} {
+      allow get: if isSignedIn() && isValidId(uid) && (isOwner(uid) || isAdmin());
+      allow list: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+
+      allow create: if isSignedIn() &&
+        isValidId(uid) &&
+        isValidAdminRecord(incoming(), uid) &&
+        incoming().grantedBy == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+
+      allow update: if isSignedIn() &&
+        isValidId(uid) &&
+        isValidAdminRecord(incoming(), uid) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'grantedBy', 'updatedAt']) &&
+        isAdmin();
+
+      allow delete: if isSignedIn() && isValidId(uid) && isAdmin();
+    }
+
+    match /admin_requests/{uid} {
+      allow get: if isSignedIn() && isValidId(uid) && (isOwner(uid) || isAdmin());
+      allow list: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+
+      allow create: if isOwner(uid) &&
+        isValidId(uid) &&
+        isValidAdminRequest(incoming(), uid) &&
+        incoming().status == 'pending' &&
+        incoming().reviewedBy == '' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isActiveMember(uid);
+
+      allow update: if isSignedIn() &&
+        isValidId(uid) &&
+        isValidAdminRequest(incoming(), uid) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          (
+            isAdmin() &&
+            incoming().reviewedBy == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reviewedBy', 'updatedAt'])
+          ) || (
+            isOwner(uid) &&
+            existing().status == 'pending' &&
+            incoming().status == 'pending' &&
+            incoming().reviewedBy == '' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['reason', 'displayName', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isSignedIn() && isValidId(uid) && (isOwner(uid) || isAdmin());
+    }
+
+    match /member_orders/{orderId} {
+      allow get: if isSignedIn() && isValidId(orderId) && (existing().uid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+
+      allow create: if isSignedIn() &&
+        isValidId(orderId) &&
+        isValidMemberOrder(incoming(), orderId) &&
+        incoming().uid == request.auth.uid &&
+        incoming().status == '待出貨' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isActiveMember(request.auth.uid);
+
+      allow update: if isSignedIn() &&
+        isValidId(orderId) &&
+        isValidMemberOrder(incoming(), orderId) &&
+        incoming().orderId == existing().orderId &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        isAdmin() &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+
+      allow delete: if isSignedIn() && isValidId(orderId) && isAdmin();
+    }
+  }
+}

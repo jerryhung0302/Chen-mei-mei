@@ -7,7 +7,9 @@ import { ProductDetailView } from './components/ProductDetailView';
 import { CartDrawer } from './components/CartDrawer';
 import { FavoritesMenu } from './components/FavoritesMenu';
 import { AdminDashboard } from './components/AdminDashboard';
+import { MemberModal } from './components/MemberModal';
 import { MediaImage } from './components/MediaImage';
+import { useAuth } from './context/AuthContext';
 import {
   BackendUnavailableError,
   getLocalOrders,
@@ -53,9 +55,23 @@ export default function App() {
   });
   const [favoritesOpen, setFavoritesOpen] = useState(false);
 
+  const {
+    user,
+    isRegistered,
+    cloudFavoriteIds,
+    openMemberModal,
+    syncFavoriteToCloud
+  } = useAuth();
+
   const searchInputRef = useRef<HTMLInputElement>(null);
   const catalogSectionRef = useRef<HTMLElement>(null);
   const craftSectionRef = useRef<HTMLElement>(null);
+
+  // Merge cloud favorites when registered member signs in
+  useEffect(() => {
+    if (!isRegistered || cloudFavoriteIds.length === 0) return;
+    setFavoriteIds((prev) => Array.from(new Set([...cloudFavoriteIds, ...prev])));
+  }, [isRegistered, cloudFavoriteIds]);
 
   useEffect(() => {
     try {
@@ -221,8 +237,8 @@ export default function App() {
   };
 
   const toggleFavorite = (product: Product) => {
+    const exists = favoriteIds.includes(product.id);
     setFavoriteIds((prev) => {
-      const exists = prev.includes(product.id);
       if (exists) {
         setCartToast(`已取消收藏「${product.name}」`);
         setTimeout(() => setCartToast(null), 2000);
@@ -232,6 +248,11 @@ export default function App() {
       setTimeout(() => setCartToast(null), 2000);
       return [product.id, ...prev];
     });
+    if (isRegistered) {
+      void syncFavoriteToCloud(product.id, !exists).catch(() => {
+        // ignore transient cloud sync failures
+      });
+    }
   };
 
   const favoriteProducts = publishedProducts.filter((p) => favoriteIds.includes(p.id));
@@ -560,6 +581,7 @@ export default function App() {
             orders={orders}
             onRefresh={fetchData}
             onPreviewProduct={(product) => handleOpenProduct(product)}
+            onBackToStore={() => handleNavigate('home')}
           />
         )}
       </main>
@@ -579,7 +601,7 @@ export default function App() {
                 <p className="mt-0.5">台北市大安區仁愛路四段 · 週一至週五 10:00–18:00 客服服務</p>
               </div>
             </div>
-            <div className="flex items-center gap-5">
+            <div className="flex flex-wrap items-center gap-5">
               <button
                 type="button"
                 onClick={() => handleNavigate('home')}
@@ -593,6 +615,13 @@ export default function App() {
                 className="hover:text-zinc-900"
               >
                 全部商品
+              </button>
+              <button
+                type="button"
+                onClick={() => openMemberModal(user && !isRegistered ? 'register' : 'profile')}
+                className="hover:text-zinc-900"
+              >
+                會員註冊／中心
               </button>
               <button
                 type="button"
@@ -628,6 +657,9 @@ export default function App() {
           fetchData();
         }}
       />
+
+      {/* Member Registration & Account Modal */}
+      <MemberModal onNavigateAdmin={() => handleNavigate('admin')} />
     </div>
   );
 }
