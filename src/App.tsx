@@ -8,6 +8,14 @@ import { CartDrawer } from './components/CartDrawer';
 import { FavoritesMenu } from './components/FavoritesMenu';
 import { AdminDashboard } from './components/AdminDashboard';
 import { MediaImage } from './components/MediaImage';
+import {
+  BackendUnavailableError,
+  getLocalOrders,
+  getLocalProducts,
+  parseApiJson,
+  setLocalOrders,
+  setLocalProducts
+} from './lib/apiClient';
 
 const HERO_IMAGE = '/src/assets/images/hero_living_object_1794751851954.jpg';
 const CATEGORIES: ProductCategory[] = ['全部', '旅館住宿', '居家燈飾', '器皿生活', '香氛保養', '聲學配件'];
@@ -73,15 +81,26 @@ export default function App() {
         fetch('/api/products', { credentials: 'same-origin' }),
         fetch('/api/orders', { credentials: 'same-origin' })
       ]);
-      if (!prodRes.ok) throw new Error('無法載入商品資料');
-      const prodText = await prodRes.text();
-      const prodData = (prodText.trim() ? JSON.parse(prodText) : []) as Product[];
+
+      let prodData: Product[];
+      try {
+        prodData = await parseApiJson<Product[]>(prodRes, '無法載入商品資料');
+        setLocalProducts(prodData);
+      } catch (err) {
+        if (err instanceof BackendUnavailableError) {
+          prodData = getLocalProducts();
+        } else {
+          throw err;
+        }
+      }
       setProducts(prodData);
 
-      if (orderRes.ok) {
-        const orderText = await orderRes.text();
-        const orderData = (orderText.trim() ? JSON.parse(orderText) : []) as Order[];
+      try {
+        const orderData = await parseApiJson<Order[]>(orderRes, '無法載入訂單資料');
         setOrders(orderData);
+        setLocalOrders(orderData);
+      } catch {
+        setOrders(getLocalOrders());
       }
 
       // Sync currently viewed product if it was edited
@@ -359,7 +378,7 @@ export default function App() {
 
               {/* Product Grid */}
               {loading ? (
-                <div className="grid grid-cols-2 lg:grid-cols-3 gap-3.5 sm:gap-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
                   {[1, 2, 3].map((n) => (
                     <div
                       key={n}
@@ -393,7 +412,7 @@ export default function App() {
                   </p>
                 </div>
               ) : (
-                <div className="grid grid-cols-2 lg:grid-cols-3 gap-3.5 sm:gap-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
                   {filteredProducts.map((product) => (
                     <ProductCard
                       key={product.id}
@@ -507,7 +526,7 @@ export default function App() {
                 </button>
               </div>
             ) : (
-              <div className="grid grid-cols-2 lg:grid-cols-3 gap-3.5 sm:gap-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
                 {filteredProducts.map((product) => (
                   <ProductCard
                     key={product.id}

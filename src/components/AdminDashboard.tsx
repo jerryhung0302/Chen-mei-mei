@@ -18,6 +18,15 @@ import {
   X
 } from 'lucide-react';
 import type { Order, OrderStatus, Product, ProductCategory, ProductSpec } from '../types';
+import {
+  BackendUnavailableError,
+  fileToDataUrl,
+  getLocalProducts,
+  optimizeImageFile,
+  parseApiJson,
+  setLocalProducts,
+  updateLocalOrderStatus
+} from '../lib/apiClient';
 import { MediaImage } from './MediaImage';
 import { VideoPlayer } from './VideoPlayer';
 
@@ -98,91 +107,7 @@ interface UploadResult {
   type: 'image' | 'video';
   originalName?: string;
   size?: number;
-}
-
-async function parseJsonResponse<T>(res: Response, fallbackError: string): Promise<T> {
-  const text = await res.text();
-  let parsed: unknown = null;
-  if (text.trim()) {
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      if (!res.ok) {
-        throw new Error(`${fallbackError}（HTTP ${res.status}）`);
-      }
-      throw new Error(`${fallbackError}（伺服器回傳格式異常）`);
-    }
-  }
-
-  if (!res.ok) {
-    const errMsg =
-      parsed && typeof parsed === 'object' && 'error' in parsed && typeof (parsed as { error?: unknown }).error === 'string'
-        ? (parsed as { error: string }).error
-        : `${fallbackError}（HTTP ${res.status}）`;
-    throw new Error(errMsg);
-  }
-
-  if (!parsed) {
-    throw new Error(`${fallbackError}（伺服器回傳空白回應，HTTP ${res.status}）`);
-  }
-
-  return parsed as T;
-}
-
-function fileToDataUrl(file: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
-    reader.onerror = () => reject(new Error('無法讀取圖片檔案'));
-    reader.readAsDataURL(file);
-  });
-}
-
-async function optimizeImageFile(file: File): Promise<File> {
-  const compressible = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
-  if (!compressible.includes(file.type.toLowerCase()) || file.size <= 1.2 * 1024 * 1024) {
-    return file;
-  }
-
-  try {
-    const objectUrl = URL.createObjectURL(file);
-    try {
-      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-        const el = new Image();
-        el.onload = () => resolve(el);
-        el.onerror = () => reject(new Error('image decode failed'));
-        el.src = objectUrl;
-      });
-
-      const maxDim = 1920;
-      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
-      const targetW = Math.max(1, Math.round(img.width * scale));
-      const targetH = Math.max(1, Math.round(img.height * scale));
-
-      const canvas = document.createElement('canvas');
-      canvas.width = targetW;
-      canvas.height = targetH;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return file;
-      ctx.drawImage(img, 0, 0, targetW, targetH);
-
-      const outputMime = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
-      const blob = await new Promise<Blob | null>((resolve) =>
-        canvas.toBlob(resolve, outputMime, outputMime === 'image/jpeg' ? 0.88 : undefined)
-      );
-      if (!blob || blob.size >= file.size) {
-        return file;
-      }
-
-      const baseName = file.name.replace(/\.[^.]+$/, '') || 'upload';
-      const ext = outputMime === 'image/png' ? '.png' : '.jpg';
-      return new File([blob], `${baseName}${ext}`, { type: outputMime });
-    } finally {
-      URL.revokeObjectURL(objectUrl);
-    }
-  } catch {
-    return file;
-  }
+  localMode?: boolean;
 }
 
 export function AdminDashboard({
@@ -283,7 +208,7 @@ export function AdminDashboard({
     setActiveTab('editor');
   };
 
-  // Upload a single image reliably via multipart first, then automatic JSON base64 fallback
+  // Upload a single image via /api/upload -> /api/upload-base64 -> compact Data URL fallback if /api/* is 404 (static preview)
   const uploadSingleImage = async (rawFile: File): Promise<UploadResult> => {
     const file = await optimizeImageFile(rawFile);
 
@@ -295,24 +220,45 @@ export function AdminDashboard({
         body: fd,
         credentials: 'same-origin'
       });
-      return await parseJsonResponse<UploadResult>(res, '圖片上傳失敗');
-    } catch (multipartErr) {
-      // Fallback to base64 JSON upload if multipart body was dropped or returned empty response
+      return await parseApiJson<UploadResult>(res, '圖片上傳失敗');
+    } catch {
       const dataUrl = await fileToDataUrl(file);
       if (!dataUrl) {
-        throw multipartErr;
+        throw new Error('無法讀取圖片檔案，請改用 JPG 或 PNG 圖檔');
       }
-      const fallbackRes = await fetch('/api/upload-base64', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({
-          filename: file.name,
-          mimeType: file.type,
-          dataBase64: dataUrl
-        })
-      });
-      return await parseJsonResponse<UploadResult>(fallbackRes, '圖片上傳失敗');
+
+      try {
+        const fallbackRes = await fetch('/api/upload-base64', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({
+            filename: file.name,
+            mimeType: file.type,
+            dataBase64: dataUrl
+          })
+        });
+        return await parseApiJson<UploadResult>(fallbackRes, '圖片上傳失敗');
+      } catch (base64Err) {
+        if (base64Err instanceof BackendUnavailableError) {
+          // Static hosting / Shared static preview without Node backend:
+          // Compress into a compact Data URL so preview and saving still work seamlessly.
+          const compactFile = await optimizeImageFile(rawFile, {
+            maxDim: 1080,
+            maxBytes: 180 * 1024,
+            quality: 0.82
+          });
+          const compactDataUrl = await fileToDataUrl(compactFile);
+          return {
+            url: compactDataUrl || dataUrl,
+            type: 'image',
+            originalName: rawFile.name,
+            size: compactFile.size,
+            localMode: true
+          };
+        }
+        throw base64Err;
+      }
     }
   };
 
@@ -324,6 +270,7 @@ export function AdminDashboard({
     setImageSectionError('');
     try {
       const uploadedUrls: string[] = [];
+      let usedLocalMode = false;
       const nextMeta: Record<
         string,
         { status: 'loading' | 'verified' | 'error'; name?: string; size?: number }
@@ -331,6 +278,7 @@ export function AdminDashboard({
 
       for (const file of selectedFiles) {
         const data = await uploadSingleImage(file);
+        if (data.localMode) usedLocalMode = true;
         uploadedUrls.push(data.url);
         nextMeta[data.url] = {
           status: 'loading',
@@ -343,7 +291,12 @@ export function AdminDashboard({
       const firstNewIndex = form.images.length;
       setForm((prev) => ({ ...prev, images: [...prev.images, ...uploadedUrls] }));
       setPreviewGalleryIndex(firstNewIndex);
-      showToast('success', `已上傳 ${uploadedUrls.length} 張商品圖片，可於下方與右側即時預覽`);
+      showToast(
+        'success',
+        usedLocalMode
+          ? `已載入 ${uploadedUrls.length} 張商品圖片（靜態預覽模式已自動最佳化保存）`
+          : `已上傳 ${uploadedUrls.length} 張商品圖片，可於下方與右側即時預覽`
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : '圖片上傳失敗，請檢查圖片格式或稍後再試';
       setImageSectionError(message);
@@ -515,13 +468,38 @@ export function AdminDashboard({
 
       const url = form.id ? `/api/products/${form.id}` : '/api/products';
       const method = form.id ? 'PUT' : 'POST';
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify(payload)
-      });
-      await parseJsonResponse<Product>(res, '儲存商品失敗');
+      try {
+        const res = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify(payload)
+        });
+        await parseApiJson<Product>(res, '儲存商品失敗');
+      } catch (err) {
+        if (err instanceof BackendUnavailableError) {
+          const current = getLocalProducts();
+          const now = new Date().toISOString();
+          if (form.id) {
+            setLocalProducts(
+              current.map((p) =>
+                p.id === form.id ? { ...p, ...payload, updatedAt: now } : p
+              )
+            );
+          } else {
+            const newProd: Product = {
+              id: `prod-${Date.now()}`,
+              ...payload,
+              variants: payload.variants.length > 0 ? payload.variants : ['標準款式'],
+              createdAt: now,
+              updatedAt: now
+            };
+            setLocalProducts([newProd, ...current]);
+          }
+        } else {
+          throw err;
+        }
+      }
 
       await onRefresh();
       showToast('success', form.id ? '商品資料已更新並同步至前台' : '新商品已成功發佈');
@@ -536,12 +514,25 @@ export function AdminDashboard({
 
   const handleTogglePublished = async (product: Product) => {
     try {
-      const res = await fetch(`/api/products/${product.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ published: !product.published })
-      });
-      if (!res.ok) throw new Error('狀態切換失敗');
+      try {
+        const res = await fetch(`/api/products/${product.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ published: !product.published })
+        });
+        await parseApiJson<Product>(res, '狀態切換失敗');
+      } catch (err) {
+        if (err instanceof BackendUnavailableError) {
+          setLocalProducts(
+            getLocalProducts().map((p) =>
+              p.id === product.id ? { ...p, published: !p.published } : p
+            )
+          );
+        } else {
+          throw err;
+        }
+      }
       await onRefresh();
       showToast('success', product.published ? '已將商品下架為草稿' : '已將商品上架至前台');
     } catch {
@@ -551,8 +542,19 @@ export function AdminDashboard({
 
   const handleDeleteProduct = async (id: string) => {
     try {
-      const res = await fetch(`/api/products/${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('刪除失敗');
+      try {
+        const res = await fetch(`/api/products/${id}`, {
+          method: 'DELETE',
+          credentials: 'same-origin'
+        });
+        await parseApiJson<{ ok: boolean }>(res, '刪除失敗');
+      } catch (err) {
+        if (err instanceof BackendUnavailableError) {
+          setLocalProducts(getLocalProducts().filter((p) => p.id !== id));
+        } else {
+          throw err;
+        }
+      }
       setConfirmDeleteId(null);
       await onRefresh();
       showToast('success', '商品已刪除');
@@ -563,12 +565,21 @@ export function AdminDashboard({
 
   const handleUpdateOrderStatus = async (orderId: string, status: OrderStatus) => {
     try {
-      const res = await fetch(`/api/orders/${orderId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status })
-      });
-      if (!res.ok) throw new Error('訂單狀態更新失敗');
+      try {
+        const res = await fetch(`/api/orders/${orderId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ status })
+        });
+        await parseApiJson<Order>(res, '訂單狀態更新失敗');
+      } catch (err) {
+        if (err instanceof BackendUnavailableError) {
+          updateLocalOrderStatus(orderId, status);
+        } else {
+          throw err;
+        }
+      }
       await onRefresh();
       showToast('success', `訂單 #${orderId} 狀態已更新為「${status}」`);
     } catch {

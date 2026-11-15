@@ -52,7 +52,7 @@ export function ProductCard({
         </button>
       </div>
 
-      <div className="p-3.5 sm:p-4 flex-1 flex flex-col justify-between gap-3">
+      <div className="p-4 flex-1 flex flex-col justify-between gap-3">
         <div>
           {/* Unboxed metadata with typographic separator (no pill spam) */}
           <div className="flex items-center flex-wrap gap-x-2 gap-y-0.5 text-xs text-zinc-500 mb-1.5">
@@ -77,17 +77,17 @@ export function ProductCard({
             onClick={() => onSelect(product)}
             className="text-left w-full focus-visible:outline-none"
           >
-            <h3 className="text-sm sm:text-base font-semibold text-zinc-900 leading-snug line-clamp-1 group-hover:text-emerald-950 transition-colors">
+            <h3 className="text-base font-semibold text-zinc-900 leading-snug line-clamp-1 group-hover:text-emerald-950 transition-colors">
               {product.name}
             </h3>
-            <p className="text-xs text-zinc-500 mt-1 line-clamp-1">
+            <p className="text-xs sm:text-sm text-zinc-500 mt-1 line-clamp-1">
               {product.subtitle || '台灣設計質感選物'}
             </p>
           </button>
         </div>
 
-        <div className="flex items-center justify-between gap-2 pt-2 border-t border-zinc-100">
-          <span className="text-sm sm:text-base font-semibold text-zinc-900 tabular-nums">
+        <div className="flex items-center justify-between gap-2 pt-2.5 border-t border-zinc-100">
+          <span className="text-base font-semibold text-zinc-900 tabular-nums whitespace-nowrap">
             NT$ {product.price.toLocaleString('zh-TW')}
           </span>
 
@@ -96,7 +96,7 @@ export function ProductCard({
             disabled={!inStock}
             onClick={() => onQuickAdd(product)}
             aria-label={`將 ${product.name} 加入購物車`}
-            className="min-h-[40px] sm:min-h-[38px] px-3 py-1.5 rounded-lg bg-zinc-100 hover:bg-emerald-950 text-zinc-900 hover:text-white disabled:opacity-40 disabled:pointer-events-none text-xs font-medium transition-colors flex items-center gap-1 shrink-0 whitespace-nowrap"
+            className="min-h-[40px] sm:min-h-[38px] px-3.5 py-1.5 rounded-lg bg-zinc-100 hover:bg-emerald-950 text-zinc-900 hover:text-white disabled:opacity-40 disabled:pointer-events-none text-xs font-medium transition-colors flex items-center gap-1 shrink-0 whitespace-nowrap"
           >
             <Plus className="w-3.5 h-3.5" />
             <span>加入</span>

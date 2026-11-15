@@ -1,6 +1,12 @@
 import { useState } from 'react';
 import { CheckCircle2, Minus, Plus, ShoppingBag, Trash2, X } from 'lucide-react';
 import type { CartItem, Order, PaymentMethod, ShippingMethod } from '../types';
+import {
+  BackendUnavailableError,
+  getLocalOrders,
+  parseApiJson,
+  setLocalOrders
+} from '../lib/apiClient';
 import { MediaImage } from './MediaImage';
 
 interface CartDrawerProps {
@@ -60,30 +66,47 @@ export function CartDrawer({
     setSubmitting(true);
     setErrorMsg('');
     try {
-      const res = await fetch('/api/orders', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({
-          customerName,
-          phone,
-          shippingMethod,
-          paymentMethod,
-          address,
-          note,
-          items
-        })
-      });
-      const text = await res.text();
-      const data = text.trim() ? JSON.parse(text) : null;
-      if (!res.ok) {
-        throw new Error(data?.error || `訂單建立失敗（HTTP ${res.status}）`);
+      let createdOrder: Order;
+      try {
+        const res = await fetch('/api/orders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({
+            customerName,
+            phone,
+            shippingMethod,
+            paymentMethod,
+            address,
+            note,
+            items
+          })
+        });
+        createdOrder = await parseApiJson<Order>(res, '訂單建立失敗');
+      } catch (err) {
+        if (err instanceof BackendUnavailableError) {
+          createdOrder = {
+            id: `ZW-${Date.now().toString().slice(-6)}`,
+            customerName: customerName.trim(),
+            phone: phone.trim(),
+            shippingMethod,
+            paymentMethod,
+            address: address.trim(),
+            note: note.trim(),
+            items,
+            subtotal,
+            shippingFee,
+            total,
+            status: '待出貨',
+            createdAt: new Date().toISOString()
+          };
+          setLocalOrders([createdOrder, ...getLocalOrders()]);
+        } else {
+          throw err;
+        }
       }
-      if (!data) {
-        throw new Error('訂單送出失敗，請稍後再試');
-      }
-      setConfirmedOrder(data as Order);
-      onOrderCreated(data as Order);
+      setConfirmedOrder(createdOrder);
+      onOrderCreated(createdOrder);
       onClearCart();
       setStep('success');
       setCustomerName('');
