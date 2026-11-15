@@ -63,6 +63,7 @@ export function CartDrawer({
       const res = await fetch('/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
         body: JSON.stringify({
           customerName,
           phone,
@@ -73,9 +74,13 @@ export function CartDrawer({
           items
         })
       });
-      const data = await res.json();
+      const text = await res.text();
+      const data = text.trim() ? JSON.parse(text) : null;
       if (!res.ok) {
-        throw new Error(data.error || '訂單建立失敗');
+        throw new Error(data?.error || `訂單建立失敗（HTTP ${res.status}）`);
+      }
+      if (!data) {
+        throw new Error('訂單送出失敗，請稍後再試');
       }
       setConfirmedOrder(data as Order);
       onOrderCreated(data as Order);

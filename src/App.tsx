@@ -70,15 +70,17 @@ export default function App() {
     setLoadError('');
     try {
       const [prodRes, orderRes] = await Promise.all([
-        fetch('/api/products'),
-        fetch('/api/orders')
+        fetch('/api/products', { credentials: 'same-origin' }),
+        fetch('/api/orders', { credentials: 'same-origin' })
       ]);
       if (!prodRes.ok) throw new Error('無法載入商品資料');
-      const prodData = (await prodRes.json()) as Product[];
+      const prodText = await prodRes.text();
+      const prodData = (prodText.trim() ? JSON.parse(prodText) : []) as Product[];
       setProducts(prodData);
 
       if (orderRes.ok) {
-        const orderData = (await orderRes.json()) as Order[];
+        const orderText = await orderRes.text();
+        const orderData = (orderText.trim() ? JSON.parse(orderText) : []) as Order[];
         setOrders(orderData);
       }
 

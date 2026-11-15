@@ -238,6 +238,7 @@ function saveStore(data: StoreData): void {
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
+    fs.mkdirSync(UPLOADS_DIR, { recursive: true });
     cb(null, UPLOADS_DIR);
   },
   filename: (_req, file, cb) => {
@@ -269,7 +270,7 @@ const upload = multer({
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '10mb' }));
+  app.use(express.json({ limit: '30mb' }));
 
   // Serve uploaded files and static assets cleanly in both dev and production
   app.use('/uploads', express.static(UPLOADS_DIR));
@@ -281,7 +282,7 @@ async function startServer() {
     res.json({ ok: true });
   });
 
-  // Upload endpoint (supports images and videos)
+  // Upload endpoint (supports images and videos via multipart/form-data)
   app.post('/api/upload', upload.single('file'), (req, res) => {
     if (!req.file) {
       res.status(400).json({ error: '未選擇任何檔案' });
@@ -295,6 +296,53 @@ async function startServer() {
       originalName: req.file.originalname,
       size: req.file.size
     });
+  });
+
+  // Fallback JSON base64 upload endpoint (resilient if multipart is interrupted by proxy)
+  app.post('/api/upload-base64', (req, res) => {
+    try {
+      const { filename, mimeType, dataBase64 } = req.body as {
+        filename?: string;
+        mimeType?: string;
+        dataBase64?: string;
+      };
+      if (!dataBase64 || typeof dataBase64 !== 'string') {
+        res.status(400).json({ error: '未收到圖片資料' });
+        return;
+      }
+
+      const dataUrlMatch = dataBase64.match(/^data:([^;]+);base64,(.+)$/);
+      const resolvedMime = (dataUrlMatch?.[1] || mimeType || 'image/jpeg').toLowerCase();
+      const rawBase64 = dataUrlMatch?.[2] || dataBase64;
+      const buffer = Buffer.from(rawBase64, 'base64');
+
+      if (buffer.length === 0) {
+        res.status(400).json({ error: '圖片資料為空' });
+        return;
+      }
+
+      let ext = path.extname(filename || '').toLowerCase();
+      if (!IMAGE_EXTS.has(ext)) {
+        if (resolvedMime.includes('png')) ext = '.png';
+        else if (resolvedMime.includes('webp')) ext = '.webp';
+        else if (resolvedMime.includes('gif')) ext = '.gif';
+        else if (resolvedMime.includes('svg')) ext = '.svg';
+        else ext = '.jpg';
+      }
+
+      fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+      const uniqueName = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}${ext}`;
+      fs.writeFileSync(path.join(UPLOADS_DIR, uniqueName), buffer);
+
+      res.json({
+        url: `/uploads/${uniqueName}`,
+        type: 'image',
+        originalName: filename || uniqueName,
+        size: buffer.length
+      });
+    } catch {
+      res.status(400).json({ error: '圖片解碼儲存失敗，請改用其他圖檔格式重試' });
+    }
   });
 
   // Products CRUD

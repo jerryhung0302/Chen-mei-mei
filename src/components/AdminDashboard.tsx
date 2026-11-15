@@ -93,6 +93,98 @@ function productToForm(p: Product): ProductFormState {
   };
 }
 
+interface UploadResult {
+  url: string;
+  type: 'image' | 'video';
+  originalName?: string;
+  size?: number;
+}
+
+async function parseJsonResponse<T>(res: Response, fallbackError: string): Promise<T> {
+  const text = await res.text();
+  let parsed: unknown = null;
+  if (text.trim()) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      if (!res.ok) {
+        throw new Error(`${fallbackError}（HTTP ${res.status}）`);
+      }
+      throw new Error(`${fallbackError}（伺服器回傳格式異常）`);
+    }
+  }
+
+  if (!res.ok) {
+    const errMsg =
+      parsed && typeof parsed === 'object' && 'error' in parsed && typeof (parsed as { error?: unknown }).error === 'string'
+        ? (parsed as { error: string }).error
+        : `${fallbackError}（HTTP ${res.status}）`;
+    throw new Error(errMsg);
+  }
+
+  if (!parsed) {
+    throw new Error(`${fallbackError}（伺服器回傳空白回應，HTTP ${res.status}）`);
+  }
+
+  return parsed as T;
+}
+
+function fileToDataUrl(file: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.onerror = () => reject(new Error('無法讀取圖片檔案'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function optimizeImageFile(file: File): Promise<File> {
+  const compressible = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+  if (!compressible.includes(file.type.toLowerCase()) || file.size <= 1.2 * 1024 * 1024) {
+    return file;
+  }
+
+  try {
+    const objectUrl = URL.createObjectURL(file);
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = () => reject(new Error('image decode failed'));
+        el.src = objectUrl;
+      });
+
+      const maxDim = 1920;
+      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const targetW = Math.max(1, Math.round(img.width * scale));
+      const targetH = Math.max(1, Math.round(img.height * scale));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = targetW;
+      canvas.height = targetH;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return file;
+      ctx.drawImage(img, 0, 0, targetW, targetH);
+
+      const outputMime = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+      const blob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob(resolve, outputMime, outputMime === 'image/jpeg' ? 0.88 : undefined)
+      );
+      if (!blob || blob.size >= file.size) {
+        return file;
+      }
+
+      const baseName = file.name.replace(/\.[^.]+$/, '') || 'upload';
+      const ext = outputMime === 'image/png' ? '.png' : '.jpg';
+      return new File([blob], `${baseName}${ext}`, { type: outputMime });
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  } catch {
+    return file;
+  }
+}
+
 export function AdminDashboard({
   products,
   orders,
@@ -130,10 +222,14 @@ export function AdminDashboard({
 
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [imageSectionError, setImageSectionError] = useState('');
+  const [videoSectionError, setVideoSectionError] = useState('');
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const imageUrlInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
+  const videoUrlInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     return () => {
@@ -163,6 +259,8 @@ export function AdminDashboard({
     setForm(EMPTY_FORM);
     setImageUrlInput('');
     setVideoUrlInput('');
+    setImageSectionError('');
+    setVideoSectionError('');
     setImageMeta({});
     setVideoMeta({ status: 'idle' });
     setPreviewGalleryIndex(0);
@@ -173,6 +271,8 @@ export function AdminDashboard({
     setForm(productToForm(product));
     setImageUrlInput('');
     setVideoUrlInput(product.videoUrl);
+    setImageSectionError('');
+    setVideoSectionError('');
     const nextImgMeta: Record<string, { status: 'loading' | 'verified' | 'error' }> = {};
     product.images.forEach((url) => {
       nextImgMeta[url] = { status: 'loading' };
@@ -183,10 +283,45 @@ export function AdminDashboard({
     setActiveTab('editor');
   };
 
-  // Upload images via fetch FormData and verify immediate preview load
+  // Upload a single image reliably via multipart first, then automatic JSON base64 fallback
+  const uploadSingleImage = async (rawFile: File): Promise<UploadResult> => {
+    const file = await optimizeImageFile(rawFile);
+
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        body: fd,
+        credentials: 'same-origin'
+      });
+      return await parseJsonResponse<UploadResult>(res, '圖片上傳失敗');
+    } catch (multipartErr) {
+      // Fallback to base64 JSON upload if multipart body was dropped or returned empty response
+      const dataUrl = await fileToDataUrl(file);
+      if (!dataUrl) {
+        throw multipartErr;
+      }
+      const fallbackRes = await fetch('/api/upload-base64', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          filename: file.name,
+          mimeType: file.type,
+          dataBase64: dataUrl
+        })
+      });
+      return await parseJsonResponse<UploadResult>(fallbackRes, '圖片上傳失敗');
+    }
+  };
+
+  // Upload images and verify immediate preview load
   const handleImageFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
+    const selectedFiles = Array.from(files);
     setUploadingImage(true);
+    setImageSectionError('');
     try {
       const uploadedUrls: string[] = [];
       const nextMeta: Record<
@@ -194,12 +329,8 @@ export function AdminDashboard({
         { status: 'loading' | 'verified' | 'error'; name?: string; size?: number }
       > = {};
 
-      for (const file of Array.from(files)) {
-        const fd = new FormData();
-        fd.append('file', file);
-        const res = await fetch('/api/upload', { method: 'POST', body: fd });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || '圖片上傳失敗');
+      for (const file of selectedFiles) {
+        const data = await uploadSingleImage(file);
         uploadedUrls.push(data.url);
         nextMeta[data.url] = {
           status: 'loading',
@@ -209,11 +340,14 @@ export function AdminDashboard({
       }
 
       setImageMeta((prev) => ({ ...prev, ...nextMeta }));
+      const firstNewIndex = form.images.length;
       setForm((prev) => ({ ...prev, images: [...prev.images, ...uploadedUrls] }));
-      setPreviewGalleryIndex(form.images.length);
+      setPreviewGalleryIndex(firstNewIndex);
       showToast('success', `已上傳 ${uploadedUrls.length} 張商品圖片，可於下方與右側即時預覽`);
     } catch (err) {
-      showToast('error', err instanceof Error ? err.message : '圖片上傳失敗');
+      const message = err instanceof Error ? err.message : '圖片上傳失敗，請檢查圖片格式或稍後再試';
+      setImageSectionError(message);
+      showToast('error', message);
     } finally {
       setUploadingImage(false);
       if (imageInputRef.current) imageInputRef.current.value = '';
@@ -230,6 +364,7 @@ export function AdminDashboard({
     }
     const blobUrl = URL.createObjectURL(file);
     setLocalVideoPreviewUrl(blobUrl);
+    setVideoSectionError('');
     setVideoUploadProgress(0);
     setVideoMeta({ status: 'uploading', name: file.name, size: file.size });
     setPreviewGalleryIndex('video');
@@ -238,6 +373,7 @@ export function AdminDashboard({
     fd.append('file', file);
 
     const xhr = new XMLHttpRequest();
+    xhr.withCredentials = true;
     xhr.open('POST', '/api/upload', true);
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) {
@@ -249,8 +385,9 @@ export function AdminDashboard({
       setVideoUploadProgress(null);
       if (videoInputRef.current) videoInputRef.current.value = '';
       try {
-        const data = JSON.parse(xhr.responseText);
-        if (xhr.status >= 200 && xhr.status < 300) {
+        const raw = xhr.responseText?.trim();
+        const data = raw ? JSON.parse(raw) : null;
+        if (xhr.status >= 200 && xhr.status < 300 && data?.url) {
           URL.revokeObjectURL(blobUrl);
           setLocalVideoPreviewUrl('');
           setForm((prev) => ({ ...prev, videoUrl: data.url }));
@@ -263,35 +400,74 @@ export function AdminDashboard({
           setPreviewGalleryIndex('video');
           showToast('success', '商品影片已上傳至伺服器，請確認下方預覽播放');
         } else {
+          const msg = data?.error || `影片上傳失敗（HTTP ${xhr.status}）`;
           setVideoMeta({ status: 'error', name: file.name, size: file.size });
-          showToast('error', data.error || '影片上傳失敗');
+          setVideoSectionError(msg);
+          showToast('error', msg);
         }
       } catch {
+        const msg = `影片上傳失敗（伺服器回應格式異常，HTTP ${xhr.status}）`;
         setVideoMeta({ status: 'error', name: file.name, size: file.size });
-        showToast('error', '影片上傳回應格式錯誤');
+        setVideoSectionError(msg);
+        showToast('error', msg);
       }
     };
     xhr.onerror = () => {
       setVideoUploadProgress(null);
+      const msg = '網路連線異常，影片上傳失敗';
       setVideoMeta({ status: 'error', name: file.name, size: file.size });
-      showToast('error', '網路連線異常，影片上傳失敗');
+      setVideoSectionError(msg);
+      showToast('error', msg);
     };
     xhr.send(fd);
   };
 
   const handleAddImageUrl = () => {
     const trimmed = imageUrlInput.trim();
-    if (!trimmed) return;
+    if (!trimmed) {
+      const msg = '請先貼上圖片網址，或點擊上方「點擊或拖曳商品圖片至此上傳」從裝置選取圖片';
+      setImageSectionError(msg);
+      showToast('error', msg);
+      imageUrlInputRef.current?.focus();
+      return;
+    }
+
+    const isValid =
+      /^https?:\/\/.+/i.test(trimmed) ||
+      trimmed.startsWith('/') ||
+      trimmed.startsWith('data:image/') ||
+      trimmed.startsWith('blob:');
+    if (!isValid) {
+      const msg = '圖片網址請以 https://、http:// 或 / 開頭';
+      setImageSectionError(msg);
+      showToast('error', msg);
+      imageUrlInputRef.current?.focus();
+      return;
+    }
+
+    setImageSectionError('');
     setImageMeta((prev) => ({ ...prev, [trimmed]: { status: 'loading' } }));
+    const nextIdx = form.images.length;
     setForm((prev) => ({ ...prev, images: [...prev.images, trimmed] }));
+    setPreviewGalleryIndex(nextIdx);
     setImageUrlInput('');
+    showToast('success', '已加入圖片網址，可於下方縮圖確認預覽');
   };
 
   const handleApplyVideoUrl = () => {
     const trimmed = videoUrlInput.trim();
+    if (!trimmed) {
+      const msg = '請先輸入影片網址（MP4 / YouTube 連結），或點擊上方上傳影片檔';
+      setVideoSectionError(msg);
+      showToast('error', msg);
+      videoUrlInputRef.current?.focus();
+      return;
+    }
+    setVideoSectionError('');
     setForm((prev) => ({ ...prev, videoUrl: trimmed }));
-    setVideoMeta(trimmed ? { status: 'loading' } : { status: 'idle' });
-    if (trimmed) setPreviewGalleryIndex('video');
+    setVideoMeta({ status: 'loading' });
+    setPreviewGalleryIndex('video');
+    showToast('success', '已套用商品影片連結');
   };
 
   const setAsCoverImage = (idx: number) => {
@@ -342,10 +518,10 @@ export function AdminDashboard({
       const res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
         body: JSON.stringify(payload)
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || '儲存失敗');
+      await parseJsonResponse<Product>(res, '儲存商品失敗');
 
       await onRefresh();
       showToast('success', form.id ? '商品資料已更新並同步至前台' : '新商品已成功發佈');
@@ -900,51 +1076,73 @@ export function AdminDashboard({
                 className="flex flex-col sm:flex-row gap-3"
               >
                 <input
+                  id="admin-image-file-input"
                   ref={imageInputRef}
                   type="file"
                   accept="image/*"
                   multiple
-                  onChange={(e) => handleImageFiles(e.target.files)}
-                  className="hidden"
-                />
-                <button
-                  type="button"
                   disabled={uploadingImage}
-                  onClick={() => imageInputRef.current?.click()}
-                  className={`min-h-[56px] px-5 py-3 rounded-xl border-2 border-dashed text-sm font-medium text-zinc-800 flex items-center justify-center gap-2 transition-colors flex-1 ${
+                  onChange={(e) => handleImageFiles(e.target.files)}
+                  className="sr-only"
+                />
+                <label
+                  htmlFor="admin-image-file-input"
+                  className={`min-h-[56px] px-5 py-3 rounded-xl border-2 border-dashed text-sm font-medium text-zinc-900 flex items-center justify-center gap-2 transition-colors flex-1 ${
+                    uploadingImage ? 'opacity-60 pointer-events-none' : 'cursor-pointer'
+                  } ${
                     dragImageOver
                       ? 'border-emerald-900 bg-emerald-950/10'
-                      : 'border-zinc-300 hover:border-emerald-900 bg-zinc-50 hover:bg-emerald-950/5'
+                      : 'border-zinc-400 hover:border-emerald-900 bg-zinc-50 hover:bg-emerald-950/5'
                   }`}
                 >
-                  <ImagePlus className="w-4 h-4 text-emerald-900" />
+                  <ImagePlus className="w-4 h-4 text-emerald-900 shrink-0" />
                   <span>
                     {uploadingImage
                       ? '圖片上傳與驗證中...'
                       : '點擊或拖曳商品圖片至此上傳（可多選）'}
                   </span>
-                </button>
+                </label>
               </div>
 
               {/* URL Input */}
-              <div className="flex gap-2">
-                <div className="relative flex-1">
-                  <Link2 className="w-4 h-4 text-zinc-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="url"
-                    value={imageUrlInput}
-                    onChange={(e) => setImageUrlInput(e.target.value)}
-                    placeholder="或貼上圖片網址 https://..."
-                    className="w-full min-h-[44px] pl-10 pr-3 rounded-xl border border-zinc-300 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-900"
-                  />
+              <div className="space-y-2">
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <div className="relative flex-1">
+                    <Link2 className="w-4 h-4 text-zinc-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      ref={imageUrlInputRef}
+                      type="text"
+                      inputMode="url"
+                      value={imageUrlInput}
+                      onChange={(e) => {
+                        setImageUrlInput(e.target.value);
+                        if (imageSectionError) setImageSectionError('');
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleAddImageUrl();
+                        }
+                      }}
+                      placeholder="或貼上圖片網址 https://..."
+                      className="w-full min-h-[44px] pl-10 pr-3 rounded-xl border border-zinc-400 bg-white text-zinc-900 placeholder:text-zinc-500 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-900"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleAddImageUrl}
+                    className="min-h-[44px] px-4 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-white text-xs sm:text-sm font-medium shrink-0 whitespace-nowrap"
+                  >
+                    加入圖片
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleAddImageUrl}
-                  className="min-h-[44px] px-4 rounded-xl bg-zinc-900 text-white text-xs sm:text-sm font-medium shrink-0 whitespace-nowrap"
-                >
-                  加入圖片
-                </button>
+
+                {imageSectionError && (
+                  <p role="alert" className="text-xs font-medium text-red-700 flex items-center gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{imageSectionError}</span>
+                  </p>
+                )}
               </div>
 
               {/* Uploaded Images Preview Grid with live server-load verification */}
@@ -1059,11 +1257,13 @@ export function AdminDashboard({
               </div>
 
               <input
+                id="admin-video-file-input"
                 ref={videoInputRef}
                 type="file"
                 accept="video/mp4,video/webm,video/quicktime"
+                disabled={videoUploadProgress !== null}
                 onChange={(e) => handleVideoFile(e.target.files)}
-                className="hidden"
+                className="sr-only"
               />
 
               <div
@@ -1078,23 +1278,23 @@ export function AdminDashboard({
                   handleVideoFile(e.dataTransfer.files);
                 }}
               >
-                <button
-                  type="button"
-                  disabled={videoUploadProgress !== null}
-                  onClick={() => videoInputRef.current?.click()}
-                  className={`w-full min-h-[56px] px-5 py-3 rounded-xl border-2 border-dashed text-sm font-medium text-zinc-800 flex items-center justify-center gap-2 transition-colors ${
+                <label
+                  htmlFor="admin-video-file-input"
+                  className={`w-full min-h-[56px] px-5 py-3 rounded-xl border-2 border-dashed text-sm font-medium text-zinc-900 flex items-center justify-center gap-2 transition-colors ${
+                    videoUploadProgress !== null ? 'opacity-60 pointer-events-none' : 'cursor-pointer'
+                  } ${
                     dragVideoOver
                       ? 'border-emerald-900 bg-emerald-950/10'
-                      : 'border-zinc-300 hover:border-emerald-900 bg-zinc-50 hover:bg-emerald-950/5'
+                      : 'border-zinc-400 hover:border-emerald-900 bg-zinc-50 hover:bg-emerald-950/5'
                   }`}
                 >
-                  <Upload className="w-4 h-4 text-emerald-900" />
+                  <Upload className="w-4 h-4 text-emerald-900 shrink-0" />
                   <span>
                     {videoUploadProgress !== null
                       ? `影片上傳至伺服器中 ${videoUploadProgress}%...`
                       : '點擊或拖曳影片檔至此上傳（MP4 / WebM / MOV）'}
                   </span>
-                </button>
+                </label>
               </div>
 
               {videoUploadProgress !== null && (
@@ -1111,24 +1311,43 @@ export function AdminDashboard({
                 </div>
               )}
 
-              <div className="flex gap-2">
-                <div className="relative flex-1">
-                  <Video className="w-4 h-4 text-zinc-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="text"
-                    value={videoUrlInput}
-                    onChange={(e) => setVideoUrlInput(e.target.value)}
-                    placeholder="或輸入影片網址（MP4 / YouTube 連結）"
-                    className="w-full min-h-[44px] pl-10 pr-3 rounded-xl border border-zinc-300 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-900"
-                  />
+              <div className="space-y-2">
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <div className="relative flex-1">
+                    <Video className="w-4 h-4 text-zinc-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      ref={videoUrlInputRef}
+                      type="text"
+                      value={videoUrlInput}
+                      onChange={(e) => {
+                        setVideoUrlInput(e.target.value);
+                        if (videoSectionError) setVideoSectionError('');
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleApplyVideoUrl();
+                        }
+                      }}
+                      placeholder="或輸入影片網址（MP4 / YouTube 連結）"
+                      className="w-full min-h-[44px] pl-10 pr-3 rounded-xl border border-zinc-400 bg-white text-zinc-900 placeholder:text-zinc-500 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-900"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleApplyVideoUrl}
+                    className="min-h-[44px] px-4 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-white text-xs sm:text-sm font-medium shrink-0 whitespace-nowrap"
+                  >
+                    套用連結
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleApplyVideoUrl}
-                  className="min-h-[44px] px-4 rounded-xl bg-zinc-900 text-white text-xs sm:text-sm font-medium shrink-0 whitespace-nowrap"
-                >
-                  套用連結
-                </button>
+
+                {videoSectionError && (
+                  <p role="alert" className="text-xs font-medium text-red-700 flex items-center gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{videoSectionError}</span>
+                  </p>
+                )}
               </div>
 
               {(localVideoPreviewUrl || form.videoUrl) && (
