@@ -1,0 +1,8 @@
+{
+  "name": "質物選研 ZHIWU",
+  "description": "行動優先的質感生活電商平台，提供完整前台商品影音介紹與後台商品名稱、圖片、影片上稿管理功能。",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
