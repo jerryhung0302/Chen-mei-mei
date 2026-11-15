@@ -35,7 +35,7 @@ export interface CartItem {
 
 export type ShippingMethod = '宅配到府' | '7-ELEVEN 超商取貨' | '全家店到店';
 export type PaymentMethod = '貨到付款' | '信用卡一次付清' | 'LINE Pay';
-export type OrderStatus = '待出貨' | '已出貨' | '已完成';
+export type OrderStatus = '待處理' | '已出貨' | '已完成';
 
 export interface Order {
   id: string;

@@ -442,7 +442,11 @@ async function startServer() {
   // Orders endpoints
   app.get('/api/orders', (_req, res) => {
     const store = loadStore();
-    res.json(store.orders);
+    const normalized = store.orders.map((o) => ({
+      ...o,
+      status: ((o.status as string) === '待出貨' ? '待處理' : o.status) as Order['status']
+    }));
+    res.json(normalized);
   });
 
   app.post('/api/orders', (req, res) => {
@@ -469,7 +473,7 @@ async function startServer() {
       subtotal,
       shippingFee,
       total: subtotal + shippingFee,
-      status: '待出貨',
+      status: '待處理',
       createdAt: new Date().toISOString(),
       ...(typeof body.memberUid === 'string' && body.memberUid ? { memberUid: body.memberUid } : {})
     };

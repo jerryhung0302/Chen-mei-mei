@@ -53,6 +53,7 @@ import {
 } from '../lib/firebase';
 import { useAuth } from '../context/AuthContext';
 import { AdminMembersPanel } from './AdminMembersPanel';
+import { AdminOrdersView } from './AdminOrdersView';
 import { MediaImage } from './MediaImage';
 import { VideoPlayer } from './VideoPlayer';
 
@@ -160,6 +161,7 @@ export function AdminDashboard({
 
   const [activeTab, setActiveTab] = useState<AdminTab>('list');
   const [cloudOrders, setCloudOrders] = useState<MemberOrderRecord[]>([]);
+  const [updatingOrderId, setUpdatingOrderId] = useState<string | null>(null);
   const [requestReason, setRequestReason] = useState('');
   const [requestBusy, setRequestBusy] = useState(false);
   const [requestMsg, setRequestMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(
@@ -691,6 +693,7 @@ export function AdminDashboard({
   };
 
   const handleUpdateOrderStatus = async (orderId: string, status: OrderStatus) => {
+    setUpdatingOrderId(orderId);
     try {
       const isCloudOrder = cloudOrders.some((co) => co.orderId === orderId);
       if (isCloudOrder) {
@@ -725,6 +728,8 @@ export function AdminDashboard({
       showToast('success', `訂單 #${orderId} 狀態已更新為「${status}」`);
     } catch {
       showToast('error', '更新訂單狀態失敗');
+    } finally {
+      setUpdatingOrderId(null);
     }
   };
 
@@ -2098,80 +2103,11 @@ export function AdminDashboard({
 
       {/* TAB 3: ORDERS MANAGEMENT */}
       {activeTab === 'orders' && (
-        <div className="space-y-4">
-          {mergedOrders.length === 0 ? (
-            <div className="py-16 text-center bg-white rounded-2xl border border-zinc-200">
-              <p className="text-sm font-medium text-zinc-800">目前尚無顧客訂單</p>
-              <p className="text-xs text-zinc-500 mt-1">顧客於前台完成結帳後，訂單紀錄將即時顯示於此處。</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {mergedOrders.map((order) => (
-                <div
-                  key={order.id}
-                  className="bg-white rounded-2xl border border-zinc-200 p-4 sm:p-5 space-y-3"
-                >
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-zinc-100 pb-3">
-                    <div>
-                      <div className="flex items-center gap-2 text-xs text-zinc-500">
-                        <span className="font-semibold text-zinc-900 tabular-nums">
-                          #{order.id}
-                        </span>
-                        <span aria-hidden="true">·</span>
-                        <span>
-                          {order.createdAt.includes('T')
-                            ? new Date(order.createdAt).toLocaleString('zh-TW')
-                            : order.createdAt}
-                        </span>
-                        {order.memberUid && (
-                          <>
-                            <span aria-hidden="true">·</span>
-                            <span className="text-emerald-900 font-medium">會員訂單</span>
-                          </>
-                        )}
-                      </div>
-                      <p className="text-sm font-medium text-zinc-900 mt-1">
-                        {order.customerName}（{order.phone}）— {order.shippingMethod} /{' '}
-                        {order.paymentMethod}
-                      </p>
-                      <p className="text-xs text-zinc-500 mt-0.5">{order.address}</p>
-                    </div>
-
-                    <div className="flex items-center gap-3">
-                      <span className="text-base font-semibold text-zinc-900 tabular-nums">
-                        NT$ {order.total.toLocaleString('zh-TW')}
-                      </span>
-                      <select
-                        value={order.status}
-                        onChange={(e) =>
-                          handleUpdateOrderStatus(order.id, e.target.value as OrderStatus)
-                        }
-                        className="min-h-[40px] px-3 rounded-lg border border-zinc-300 bg-white text-xs font-medium text-zinc-800"
-                      >
-                        <option value="待出貨">待出貨</option>
-                        <option value="已出貨">已出貨</option>
-                        <option value="已完成">已完成</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="space-y-1 text-xs text-zinc-600">
-                    {order.items.map((item, idx) => (
-                      <div key={idx} className="flex justify-between">
-                        <span>
-                          {item.name}（{item.variant}）× {item.quantity}
-                        </span>
-                        <span className="tabular-nums">
-                          NT$ {(item.price * item.quantity).toLocaleString('zh-TW')}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        <AdminOrdersView
+          orders={mergedOrders}
+          updatingOrderId={updatingOrderId}
+          onUpdateStatus={handleUpdateOrderStatus}
+        />
       )}
 
       {/* TAB 4: MEMBER & RBAC MANAGEMENT */}

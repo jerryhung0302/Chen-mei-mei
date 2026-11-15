@@ -266,7 +266,7 @@
         "status": {
           "type": "string",
           "description": "Fulfillment status of the order.",
-          "enum": ["待出貨", "已出貨", "已完成"]
+          "enum": ["待處理", "已出貨", "已完成"]
         },
         "createdAt": {
           "type": "string",

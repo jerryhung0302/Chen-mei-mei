@@ -109,7 +109,7 @@ export function CartDrawer({
             subtotal,
             shippingFee,
             total,
-            status: '待出貨',
+            status: '待處理',
             createdAt: new Date().toISOString(),
             memberUid: user?.uid
           };

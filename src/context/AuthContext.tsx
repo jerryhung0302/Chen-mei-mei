@@ -474,7 +474,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           subtotal,
           shippingFee,
           total,
-          status: '待出貨',
+          status: '待處理',
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp()
         });

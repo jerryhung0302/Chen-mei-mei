@@ -124,7 +124,7 @@ service cloud.firestore {
           (data.subtotal < 2000 && data.shippingFee == 120)
         ) &&
         data.total is number && data.total == data.subtotal + data.shippingFee &&
-        data.status in ['待出貨', '已出貨', '已完成'] &&
+        data.status in ['待處理', '待出貨', '已出貨', '已完成'] &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -271,7 +271,7 @@ service cloud.firestore {
         isValidId(orderId) &&
         isValidMemberOrder(incoming(), orderId) &&
         incoming().uid == request.auth.uid &&
-        incoming().status == '待出貨' &&
+        incoming().status == '待處理' &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
         isActiveMember(request.auth.uid);
